@@ -34,11 +34,15 @@ ASSUME_YES=0
 FORCE=0
 
 if [[ -t 1 ]]; then B=$'\e[1m'; G=$'\e[32m'; Y=$'\e[33m'; R=$'\e[31m'; N=$'\e[0m'; else B=; G=; Y=; R=; N=; fi
-step() { printf '\n%s==> %s%s\n' "$B" "$*" "$N"; }
-info() { printf '    %s\n' "$*"; }
-ok() { printf '%s    ✔ %s%s\n' "$G" "$*" "$N"; }
-warn() { printf '%s    ! %s%s\n' "$Y" "$*" "$N" >&2; }
-die() { printf '%sError: %s%s\n' "$R" "$*" "$N" >&2; exit 1; }
+# Output never fails the script (after an SSH disconnect the terminal is gone).
+step() { printf '\n%s==> %s%s\n' "$B" "$*" "$N" 2>/dev/null || true; }
+info() { printf '    %s\n' "$*" 2>/dev/null || true; }
+ok() { printf '%s    ✔ %s%s\n' "$G" "$*" "$N" 2>/dev/null || true; }
+warn() { printf '%s    ! %s%s\n' "$Y" "$*" "$N" >&2 2>/dev/null || true; }
+die() {
+  printf '%sError: %s%s\n' "$R" "$*" "$N" >&2 2>/dev/null || true
+  exit 1
+}
 REMOVE_HINT=""
 trap 'die "install failed on line $LINENO (exit $?). Fix the problem and run the installer again${REMOVE_HINT}."' ERR
 
@@ -95,7 +99,9 @@ if [[ -r /etc/os-release ]]; then
 fi
 command -v systemctl >/dev/null || die "systemd is required"
 
-if [[ -f "$CONF_DIR/install.conf" && $FORCE -eq 0 ]]; then
+HAS_RELEASE=0
+if [[ -L "$APP_HOME/current" && -d "$(readlink -f "$APP_HOME/current")" ]]; then HAS_RELEASE=1; fi
+if [[ -f "$CONF_DIR/install.conf" && $HAS_RELEASE -eq 1 && $FORCE -eq 0 ]]; then
   die "CodeClass is already installed. Use 'sudo codeclass-update' to update it, or run this again with --force to change its settings."
 fi
 
@@ -191,8 +197,11 @@ node_major() { "$1" -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo
 
 # Prefer the system Node.js in /usr/bin (what NodeSource installs); another `node` earlier in PATH may be older.
 NODE_BIN=""
+# A snap-packaged node (/snap/bin/node) can't run inside the service's sandbox, so it doesn't count.
 for candidate in /usr/bin/node "$(command -v node || true)"; do
-  if [[ -n "$candidate" && -x "$candidate" ]] && (($(node_major "$candidate") >= MIN_NODE_MAJOR)); then
+  [[ -n "$candidate" && -x "$candidate" ]] || continue
+  [[ "$(readlink -f "$candidate")" == /snap/* || "$(readlink -f "$candidate")" == /usr/bin/snap ]] && continue
+  if (($(node_major "$candidate") >= MIN_NODE_MAJOR)); then
     NODE_BIN="$candidate"
     break
   fi
@@ -202,10 +211,16 @@ if [[ -z "$NODE_BIN" ]]; then
   # Ubuntu's own (older) nodejs/libnode packages conflict with NodeSource's nodejs package: remove them first.
   # shellcheck disable=SC2016 # dpkg-query format strings, not shell expansions
   mapfile -t distro_node < <(dpkg-query -W -f='${db:Status-Abbrev} ${binary:Package} ${Version}\n' nodejs npm 'libnode*' 2>/dev/null |
-    awk '$1 == "ii" && $3 !~ /nodesource/ {print $2}')
+    awk '$1 == "ii" && $3 !~ /nodesource/ {print $2}' || true)
   if ((${#distro_node[@]} > 0)); then
-    warn "replacing Ubuntu's ${distro_node[*]} with Node.js $NODE_MAJOR from NodeSource"
-    "${APT[@]}" remove "${distro_node[@]}" >/dev/null
+    warn "Ubuntu's ${distro_node[*]} must be replaced by Node.js $NODE_MAJOR from NodeSource. apt would remove:"
+    apt-get -s remove "${distro_node[@]}" 2>/dev/null | awk '/^Remv/ {print "      " $2}' || true
+    if [[ $ASSUME_YES -eq 0 ]]; then
+      [[ -t 0 ]] || die "re-run with --yes to allow removing these packages"
+      read -r -p "    Remove them? [y/N] " answer
+      [[ "$answer" =~ ^[Yy] ]] || die "cancelled; install Node.js $MIN_NODE_MAJOR or newer yourself, then run the installer again"
+    fi
+    "${APT[@]}" remove "${distro_node[@]}"
   fi
   install -d -m 0755 /etc/apt/keyrings
   curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key | gpg --dearmor --yes -o /etc/apt/keyrings/nodesource.gpg
@@ -261,6 +276,8 @@ trap cleanup EXIT
 for file in install.sh update.sh uninstall.sh codeclass.service; do
   [[ -f "$WORK/src/deploy/$file" ]] || die "$REPO ($BRANCH) has no deploy/$file"
 done
+grep -q '^# DEPLOY_API=2' "$WORK/src/deploy/update.sh" ||
+  die "branch $BRANCH has deploy scripts older than this installer; install a newer branch or use the installer from that branch"
 ok "commit $(git -C "$WORK/src" rev-parse --short=10 HEAD)"
 
 REPLACE_STOCK=0
@@ -271,7 +288,7 @@ if [[ "$MODE" != none ]]; then
     [[ -f "$CADDYFILE" ]] || return 0
     local stock
     # shellcheck disable=SC2016 # dpkg-query format string
-    stock="$(dpkg-query -W -f='${Conffiles}\n' caddy 2>/dev/null | awk -v f="$CADDYFILE" '$1 == f {print $2}')"
+    stock="$(dpkg-query -W -f='${Conffiles}\n' caddy 2>/dev/null | awk -v f="$CADDYFILE" '$1 == f {print $2}' || true)"
     [[ -n "$stock" && "$(md5sum <"$CADDYFILE" | cut -d' ' -f1)" == "$stock" ]]
   }
   STAGED_SITE="$(mktemp /etc/caddy/.codeclass.caddy.XXXXXX)"
@@ -300,24 +317,55 @@ if [[ "$MODE" != none ]]; then
 fi
 
 step "Writing settings"
+# From here on a dropped SSH session must not stop the installer half-way (output then simply goes nowhere).
+trap '' HUP
 STAMP="$(date -u +%Y%m%d-%H%M%S)"
+# Keep copies to put back if the rebuild fails, so the running release isn't restarted with settings that don't match
+# the web server.
+PREV_ENV=""
+PREV_CONF=""
 if [[ -f "$ENV_FILE" ]]; then
   cp -p "$ENV_FILE" "$ENV_FILE.$STAMP.bak"
-  info "previous settings saved as $ENV_FILE.$STAMP.bak"
+  PREV_ENV="$ENV_FILE.$STAMP.bak"
+  info "previous settings saved as $PREV_ENV"
 fi
+if [[ -f "$CONF_DIR/install.conf" ]]; then
+  cp -p "$CONF_DIR/install.conf" "$WORK/install.conf"
+  PREV_CONF="$WORK/install.conf"
+fi
+
+# Settings this installer manages; every other line of an existing codeclass.env (comments included) is kept, and a
+# DATABASE_PATH set by hand is kept too. When it was and stays a --no-proxy install, HOST / COOKIE_SECURE set by hand
+# (e.g. behind the school's own TLS proxy) are kept as well.
+old_value() { grep -E "^[[:space:]]*$1=" "$PREV_ENV" 2>/dev/null | tail -n1 | cut -d= -f2- || true; }
+DB_PATH="$(old_value DATABASE_PATH)"
+DB_PATH="${DB_PATH:-$DATA_DIR/codeclass.db}"
+case "$MODE" in
+  https) HOST_VALUE=127.0.0.1 COOKIE_VALUE=1 ;;
+  http) HOST_VALUE=127.0.0.1 COOKIE_VALUE=0 ;;
+  none)
+    HOST_VALUE="" COOKIE_VALUE=0
+    if [[ "${OLD_MODE:-}" == none ]]; then HOST_VALUE="$(old_value HOST)" COOKIE_VALUE="$(old_value COOKIE_SECURE)"; fi
+    ;;
+esac
 {
-  echo "# CodeClass runtime settings (read by the codeclass systemd service). Restart after editing:"
-  echo "#   sudo systemctl restart codeclass"
-  echo "# To change the domain or port, run the installer again with --force (it also updates the web server)."
+  if [[ -n "$PREV_ENV" ]]; then
+    grep -vE '^[[:space:]]*(NODE_ENV|PORT|HOST|DATABASE_PATH|COOKIE_SECURE)=' "$PREV_ENV" || true
+  else
+    echo "# CodeClass runtime settings (read by the codeclass systemd service). Restart after editing:"
+    echo "#   sudo systemctl restart codeclass"
+    echo "# To change the domain, port or mode, run the installer again with --force (it also updates the web server)."
+    echo "# HOST: the interface to listen on (unset = all). COOKIE_SECURE=1 when people use the site over HTTPS."
+  fi
   echo "NODE_ENV=production"
   echo "PORT=$PORT"
-  if [[ "$MODE" == none ]]; then echo "# HOST unset: listening on every interface (no reverse proxy)"; else echo "HOST=127.0.0.1"; fi
-  echo "DATABASE_PATH=$DATA_DIR/codeclass.db"
-  echo "# 1 when people reach the site over HTTPS (sends cookies with the Secure flag)."
-  if [[ "$MODE" == https ]]; then echo "COOKIE_SECURE=1"; else echo "COOKIE_SECURE=0"; fi
-} >"$ENV_FILE"
-chown root:"$APP_USER" "$ENV_FILE"
-chmod 0640 "$ENV_FILE"
+  if [[ -n "$HOST_VALUE" ]]; then echo "HOST=$HOST_VALUE"; fi
+  echo "DATABASE_PATH=$DB_PATH"
+  echo "COOKIE_SECURE=${COOKIE_VALUE:-0}"
+} >"$ENV_FILE.new"
+chown root:"$APP_USER" "$ENV_FILE.new"
+chmod 0640 "$ENV_FILE.new"
+mv -f "$ENV_FILE.new" "$ENV_FILE"
 {
   echo "# Written by deploy/install.sh; read by codeclass-update and codeclass-uninstall."
   printf 'REPO=%q\nBRANCH=%q\nMODE=%q\nDOMAIN=%q\nEMAIL=%q\nPORT=%q\nNODE_BIN=%q\nINSTALLED_AT=%q\n' \
@@ -333,16 +381,29 @@ install -m 0755 -o root -g root "$WORK/src/deploy/uninstall.sh" /usr/local/sbin/
 REMOVE_HINT=", or remove it with: sudo codeclass-uninstall"
 
 # --- build and start (codeclass-update does the release handling: backups, health checks, rollback) ---------------
-if [[ -L "$APP_HOME/current" && -d "$(readlink -f "$APP_HOME/current")" ]]; then
-  /usr/local/sbin/codeclass-update --force --yes
+if [[ $HAS_RELEASE -eq 1 ]]; then
+  if ! /usr/local/sbin/codeclass-update --force --yes; then
+    # The previous release is running again (or never stopped): give it back its own settings.
+    if [[ -n "$PREV_ENV" ]]; then cp -p "$PREV_ENV" "$ENV_FILE"; fi
+    if [[ -n "$PREV_CONF" ]]; then cp -p "$PREV_CONF" "$CONF_DIR/install.conf"; fi
+    systemctl try-restart codeclass || true
+    die "the rebuild failed (see above), so the previous settings were put back and the web server was not changed"
+  fi
 else
   rm -f "$APP_HOME/current"
   /usr/local/sbin/codeclass-update --install --yes
 fi
 
 # --- web server ---------------------------------------------------------------------------------------------------
+reload_caddy() {
+  if systemctl is-active --quiet caddy; then systemctl reload caddy; else systemctl restart caddy; fi
+}
 if [[ "$MODE" != none ]]; then
   step "Switching on the Caddy site"
+  # Keep the live files, so they can be put back if the final configuration doesn't load.
+  for live in "$CADDYFILE" "$CADDY_SITE"; do
+    if [[ -f "$live" ]]; then cp -p "$live" "$WORK/$(basename "$live").live"; fi
+  done
   if [[ $REPLACE_STOCK -eq 1 && -f "$CADDYFILE" ]]; then
     cp -p "$CADDYFILE" "$CADDYFILE.codeclass-original"
   fi
@@ -351,8 +412,14 @@ if [[ "$MODE" != none ]]; then
   mv -f "$STAGED_MAIN" "$CADDYFILE"
   STAGED_SITE=""
   STAGED_MAIN=""
+  if ! caddy validate --adapter caddyfile --config "$CADDYFILE" >/dev/null 2>&1 || ! reload_caddy; then
+    for live in "$CADDYFILE" "$CADDY_SITE"; do
+      if [[ -f "$WORK/$(basename "$live").live" ]]; then cp -p "$WORK/$(basename "$live").live" "$live"; else rm -f "$live"; fi
+    done
+    reload_caddy || true
+    die "Caddy couldn't load the new site, so its previous configuration was put back (check: caddy validate --config $CADDYFILE). CodeClass itself is running on 127.0.0.1:$PORT"
+  fi
   systemctl enable --quiet caddy
-  systemctl reload caddy 2>/dev/null || systemctl restart caddy
   ok "Caddy serves ${DOMAIN:-port 80} → 127.0.0.1:$PORT"
 elif [[ -f "$CADDY_SITE" ]]; then
   # Switching to --no-proxy: stop serving CodeClass through Caddy, which an earlier install set up.
@@ -364,7 +431,7 @@ elif [[ -f "$CADDY_SITE" ]]; then
       mv -f "$CADDYFILE.codeclass-original" "$CADDYFILE"
     fi
   fi
-  systemctl reload caddy 2>/dev/null || true
+  reload_caddy || warn "Caddy didn't reload; check 'systemctl status caddy'"
 fi
 
 if command -v ufw >/dev/null && ufw status 2>/dev/null | grep -q '^Status: active'; then

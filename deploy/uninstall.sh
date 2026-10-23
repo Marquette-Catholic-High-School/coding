@@ -22,11 +22,15 @@ PURGE=0
 ASSUME_YES=0
 
 if [[ -t 1 ]]; then B=$'\e[1m'; G=$'\e[32m'; Y=$'\e[33m'; R=$'\e[31m'; N=$'\e[0m'; else B=; G=; Y=; R=; N=; fi
-step() { printf '\n%s==> %s%s\n' "$B" "$*" "$N"; }
-info() { printf '    %s\n' "$*"; }
-ok() { printf '%s    ✔ %s%s\n' "$G" "$*" "$N"; }
-warn() { printf '%s    ! %s%s\n' "$Y" "$*" "$N" >&2; }
-die() { printf '%sError: %s%s\n' "$R" "$*" "$N" >&2; exit 1; }
+# Output never fails the script (after an SSH disconnect the terminal is gone).
+step() { printf '\n%s==> %s%s\n' "$B" "$*" "$N" 2>/dev/null || true; }
+info() { printf '    %s\n' "$*" 2>/dev/null || true; }
+ok() { printf '%s    ✔ %s%s\n' "$G" "$*" "$N" 2>/dev/null || true; }
+warn() { printf '%s    ! %s%s\n' "$Y" "$*" "$N" >&2 2>/dev/null || true; }
+die() {
+  printf '%sError: %s%s\n' "$R" "$*" "$N" >&2 2>/dev/null || true
+  exit 1
+}
 trap 'die "uninstall failed on line $LINENO (exit $?)"' ERR
 
 usage() {
@@ -74,6 +78,7 @@ if [[ $ASSUME_YES -eq 0 ]]; then
   fi
 fi
 
+trap '' HUP
 step "Stopping the service"
 systemctl disable --now --quiet "$SERVICE" 2>/dev/null || true
 rm -f "/etc/systemd/system/$SERVICE.service"
@@ -85,8 +90,8 @@ if [[ $PURGE -eq 0 && -f "$DB" && ! -L "$DB" ]]; then
   # A final copy, taken with the service stopped. Read as the app user, so a symlink in its folder can't redirect it.
   install -d -o root -g root -m 0700 "$BACKUP_DIR"
   FINAL="$BACKUP_DIR/codeclass-$(date -u +%Y%m%d-%H%M%S)-uninstall.db"
-  runuser -u "$APP_USER" -- cat "$DB" >"$FINAL"
-  if [[ -f "$DB-wal" && ! -L "$DB-wal" ]]; then runuser -u "$APP_USER" -- cat "$DB-wal" >"$FINAL-wal"; fi
+  runuser -u "$APP_USER" -- cat "$DB" 9>&- >"$FINAL"
+  if [[ -f "$DB-wal" && ! -L "$DB-wal" ]]; then runuser -u "$APP_USER" -- cat "$DB-wal" 9>&- >"$FINAL-wal"; fi
   chmod 0600 "$FINAL"*
   ok "final database backup: $FINAL"
 fi

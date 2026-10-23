@@ -91,8 +91,9 @@ Without HTTPS, browsers won't let programs pause for typed input. Programs then 
 box instead, and sign-in cookies travel unencrypted. Use `--domain` whenever you can.
 
 Other options are `--branch NAME`, `--repo URL`, `--port PORT` and `--yes` (no questions). See `install.sh --help`.
-To change the domain, port or mode later, run the installer again with `--force` and the new options. It keeps all data
-and reuses the earlier settings for anything you leave out.
+To change the domain, port or mode later, run the installer again with `--force` and the new options. It keeps all data,
+reuses the earlier settings for anything you leave out, and keeps your own edits to `codeclass.env` such as
+`DATABASE_PATH`. If the rebuild fails, the previous settings are put back.
 
 ### Updating
 
@@ -102,7 +103,8 @@ sudo codeclass-update --check    # only report whether an update is available
 sudo codeclass-update --rollback # switch back to the previous release
 ```
 
-The new version builds while the old one keeps serving. The site is then offline for a few seconds while it switches
+Run updates over SSH inside `tmux` or `screen`, so you can still see the output if the connection drops. (The update
+carries on either way.) The new version builds while the old one keeps serving. The site is then offline for a few seconds while it switches
 over. Before switching, the database is copied to `/var/backups/codeclass` (the newest 10 copies are kept). If the new
 version doesn't start, or doesn't stay up, the updater puts the previous version and the database back by itself.
 `--rollback` returns to the release that ran before the last switch (run it again to go forward). The newest 3 releases

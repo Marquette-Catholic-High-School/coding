@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # CodeClass updater (installed as /usr/local/sbin/codeclass-update).
+# DEPLOY_API=2   (install.sh checks this marker before handing release handling to this script)
 #
 #   sudo codeclass-update              # update to the newest commit of the installed branch
 #   sudo codeclass-update --check      # only say whether an update is available
@@ -10,8 +11,8 @@
 # previous release and the database backup are put back automatically.
 #
 # Security model: releases are built by the unprivileged `codeclass` user in a staging folder and then made root-owned
-# and read-only. Code that root runs (these admin commands, the systemd unit) is taken from root's own git clone, never
-# from a folder the `codeclass` user could have written to.
+# and read-only. Root never reads or runs anything from a release folder: the systemd unit template and these admin
+# commands are taken from root's own git clone and kept in root-only places.
 set -Eeuo pipefail
 umask 022
 
@@ -20,6 +21,7 @@ RELEASES="$APP_HOME/releases"
 DATA_DIR=/var/lib/codeclass
 BACKUP_DIR=/var/backups/codeclass
 CONF_DIR=/etc/codeclass
+UNIT_DIR="$CONF_DIR/units"
 ENV_FILE="$CONF_DIR/codeclass.env"
 SERVICE=codeclass
 APP_USER=codeclass
@@ -35,12 +37,17 @@ NO_BACKUP=0
 FIRST_INSTALL=0
 NEW_BRANCH=""
 
+# Output never fails the script: after an SSH disconnect the terminal is gone, and a failed write must not abort a
+# switch half-way. Run long updates inside tmux or screen to keep seeing the output.
 if [[ -t 1 ]]; then B=$'\e[1m'; G=$'\e[32m'; Y=$'\e[33m'; R=$'\e[31m'; N=$'\e[0m'; else B=; G=; Y=; R=; N=; fi
-step() { printf '\n%s==> %s%s\n' "$B" "$*" "$N"; }
-info() { printf '    %s\n' "$*"; }
-ok() { printf '%s    ✔ %s%s\n' "$G" "$*" "$N"; }
-warn() { printf '%s    ! %s%s\n' "$Y" "$*" "$N" >&2; }
-die() { printf '%sError: %s%s\n' "$R" "$*" "$N" >&2; exit 1; }
+step() { printf '\n%s==> %s%s\n' "$B" "$*" "$N" 2>/dev/null || true; }
+info() { printf '    %s\n' "$*" 2>/dev/null || true; }
+ok() { printf '%s    ✔ %s%s\n' "$G" "$*" "$N" 2>/dev/null || true; }
+warn() { printf '%s    ! %s%s\n' "$Y" "$*" "$N" >&2 2>/dev/null || true; }
+die() {
+  printf '%sError: %s%s\n' "$R" "$*" "$N" >&2 2>/dev/null || true
+  exit 1
+}
 trap 'die "failed on line $LINENO (exit $?)"' ERR
 
 usage() {
@@ -143,21 +150,22 @@ set_link() { # set_link current|previous RELEASE
   ln -sfn "$RELEASES/$2" "$APP_HOME/$1.new" && mv -T "$APP_HOME/$1.new" "$APP_HOME/$1"
 }
 
+# The unit template saved (root-only) when RELEASE was built; the newest saved one for older releases. With none at
+# all (an install made by older scripts), the existing unit is kept as it is.
 render_unit() {
-  local unit="/etc/systemd/system/$SERVICE.service"
-  sed -e "s#@NODE@#$NODE_BIN#g" -e "s#@APP_HOME@#$APP_HOME#g" -e "s#@DATA_DIR@#$DATA_DIR#g" \
-    "$RELEASES/$1/deploy/codeclass.service" >"$unit.new" || return 1
+  local unit="/etc/systemd/system/$SERVICE.service" template="$UNIT_DIR/$1.service"
+  if [[ ! -f "$template" ]]; then
+    template="$(find "$UNIT_DIR" -maxdepth 1 -type f -name '*.service' -printf '%f\n' 2>/dev/null | sort | tail -n1 || true)"
+    if [[ -z "$template" ]]; then
+      [[ -f "$unit" ]] || return 1
+      systemctl daemon-reload
+      return
+    fi
+    template="$UNIT_DIR/$template"
+  fi
+  sed -e "s#@NODE@#$NODE_BIN#g" -e "s#@APP_HOME@#$APP_HOME#g" -e "s#@DATA_DIR@#$DATA_DIR#g" "$template" >"$unit.new" || return 1
   mv -f "$unit.new" "$unit" || return 1
   systemctl daemon-reload
-}
-
-install_commands() {
-  # Replace (not overwrite in place) so a running copy of this script is not changed under its feet.
-  local dir="$RELEASES/$1/deploy" name
-  for name in update uninstall; do
-    install -m 0755 -o root -g root "$dir/$name.sh" "/usr/local/sbin/.codeclass-$name.new"
-    mv -f "/usr/local/sbin/.codeclass-$name.new" "/usr/local/sbin/codeclass-$name"
-  done
 }
 
 prune_releases() {
@@ -167,10 +175,36 @@ prune_releases() {
   while read -r old; do
     [[ -z "$old" || "$old" == "$current" || "$old" == "$previous" ]] && continue
     rm -rf "${RELEASES:?}/$old"
+    rm -f "$UNIT_DIR/$old.service"
     info "removed old release $old"
   done < <(releases | head -n "-$KEEP_RELEASES")
   # Leftovers of builds that were interrupted more than an hour ago.
   find "$RELEASES" -mindepth 1 -maxdepth 1 -name '.build-*' -mmin +60 -exec rm -rf {} + 2>/dev/null || true
+}
+
+# Installs made by the first published scripts let the codeclass user own /opt/codeclass and its releases. Make the
+# code root-owned again: keep only the running release (frozen read-only, its .git removed) and drop the others.
+migrate_layout() {
+  local cur dir name
+  cur="$(current_release)"
+  install -d -o root -g root -m 0755 "$APP_HOME" "$RELEASES"
+  for dir in "$RELEASES"/*/; do
+    [[ -d "$dir" ]] || continue
+    name="$(basename "$dir")"
+    [[ -n "$(find "$dir" ! -user root -print -quit 2>/dev/null)" ]] || continue
+    if [[ "$name" == "$cur" ]]; then
+      chown -R root:root "$dir"
+      chmod -R go-w "$dir"
+      rm -rf "${dir:?}/.git"
+      info "made $name root-owned"
+    else
+      rm -rf "${RELEASES:?}/$name"
+      info "removed $name (built by older scripts)"
+    fi
+  done
+  rm -rf "$APP_HOME/.npm" "$APP_HOME/.cache"
+  install -d -o root -g root -m 0700 "$UNIT_DIR"
+  if [[ "$(getent passwd "$APP_USER" | cut -d: -f6)" == "$APP_HOME" ]]; then usermod -d "$DATA_DIR" "$APP_USER" || true; fi
 }
 
 # --- health -------------------------------------------------------------------------------------------------------
@@ -194,7 +228,7 @@ healthy() {
 
 # --- database backups ---------------------------------------------------------------------------------------------
 # Files in the data folder are read and written as the app user, so a symlink placed there can't make root read or
-# overwrite other files. Backups live in a root-only folder.
+# overwrite other files. Backups live in a root-only folder. (9>&- keeps the update lock out of the app user's hands.)
 BACKUP=""
 check_space() {
   [[ $NO_BACKUP -eq 1 || ! -f "$DB" ]] && return 0
@@ -224,9 +258,9 @@ backup_db() { # backup_db LABEL; sets BACKUP. Returns non-zero on failure (also 
   install -d -o root -g root -m 0700 "$BACKUP_DIR" || return 1
   local file
   file="$BACKUP_DIR/codeclass-$(date -u +%Y%m%d-%H%M%S)-$1.db"
-  runuser -u "$APP_USER" -- cat "$DB" >"$file" || { rm -f "$file"; return 1; }
+  runuser -u "$APP_USER" -- cat "$DB" 9>&- >"$file" || { rm -f "$file"; return 1; }
   if [[ -f "$DB-wal" && ! -L "$DB-wal" ]]; then
-    runuser -u "$APP_USER" -- cat "$DB-wal" >"$file-wal" || { rm -f "$file" "$file-wal"; return 1; }
+    runuser -u "$APP_USER" -- cat "$DB-wal" 9>&- >"$file-wal" || { rm -f "$file" "$file-wal"; return 1; }
   fi
   chmod 0600 "$file" || return 1
   BACKUP="$file"
@@ -238,10 +272,10 @@ restore_db() {
   # rm removes symlinks themselves; the app user then writes the files (umask 027 → 0640). The inner sh expands $1.
   rm -f "$DB" "$DB-wal" "$DB-shm" || return 1
   # shellcheck disable=SC2016
-  runuser -u "$APP_USER" -- sh -c 'umask 027 && cat >"$1"' sh "$DB" <"$BACKUP" || return 1
+  runuser -u "$APP_USER" -- sh -c 'umask 027 && cat >"$1"' sh "$DB" <"$BACKUP" 9>&- || return 1
   if [[ -f "$BACKUP-wal" ]]; then
     # shellcheck disable=SC2016
-    runuser -u "$APP_USER" -- sh -c 'umask 027 && cat >"$1"' sh "$DB-wal" <"$BACKUP-wal" || return 1
+    runuser -u "$APP_USER" -- sh -c 'umask 027 && cat >"$1"' sh "$DB-wal" <"$BACKUP-wal" 9>&- || return 1
   fi
   warn "database restored from $BACKUP"
 }
@@ -276,7 +310,7 @@ activate() {
     return 0
   fi
 
-  journalctl -u "$SERVICE" -n 40 --no-pager >&2 || true
+  journalctl -u "$SERVICE" -n 40 --no-pager >&2 2>/dev/null || true
   warn "$target did not start properly${previous:+; going back to $previous}"
   systemctl stop "$SERVICE" 2>/dev/null || true
   if restore_db; then
@@ -284,7 +318,7 @@ activate() {
   else
     warn "couldn't restore the database from $BACKUP; restore it by hand (see README)"
   fi
-  [[ "$discard" == 1 ]] && rm -rf "${RELEASES:?}/$target"
+  if [[ "$discard" == 1 ]]; then rm -rf "${RELEASES:?}/$target" "$UNIT_DIR/$target.service"; fi
   if [[ -z "$previous" ]]; then
     rm -f "$APP_HOME/current"
     systemctl disable --quiet "$SERVICE" 2>/dev/null || true
@@ -304,21 +338,22 @@ BUILD_WORK=""
 BUILD_HOME=""
 BUILD_STAGE=""
 NEW=""
+# Removes temporary build folders (and an unfinished staging folder). Runs on every exit.
+# shellcheck disable=SC2317 # only called from the EXIT trap
 cleanup_build() {
-  [[ -n "$BUILD_WORK" ]] && rm -rf "$BUILD_WORK"
-  [[ -n "$BUILD_HOME" ]] && rm -rf "$BUILD_HOME"
-  [[ -n "$BUILD_STAGE" && -d "$BUILD_STAGE" ]] && rm -rf "$BUILD_STAGE"
-  BUILD_WORK=""
-  BUILD_HOME=""
-  BUILD_STAGE=""
+  if [[ -n "$BUILD_HOME" ]]; then rm -rf "$BUILD_HOME"; fi
+  if [[ -n "$BUILD_STAGE" && -d "$BUILD_STAGE" ]]; then rm -rf "$BUILD_STAGE"; fi
+  if [[ -n "$BUILD_WORK" ]]; then rm -rf "$BUILD_WORK"; fi
+  return 0
 }
+trap cleanup_build EXIT
 
 # Runs a command as the app user in a folder, with the recorded Node.js first in PATH and a throwaway npm cache.
 as_app() {
   local dir="$1"
   shift
   runuser -u "$APP_USER" -- env -C "$dir" HOME="$BUILD_HOME" npm_config_cache="$BUILD_HOME/npm-cache" \
-    PATH="$NODE_DIR:/usr/local/bin:/usr/bin:/bin" "$@"
+    PATH="$NODE_DIR:/usr/local/bin:/usr/bin:/bin" "$@" 9>&-
 }
 
 # better-sqlite3 ships prebuilt binaries for common machines; compile it when none fits.
@@ -332,7 +367,8 @@ sqlite_ok() {
   as_app "$dir" node -e "$probe"
 }
 
-# Builds the newest commit of $BRANCH into $RELEASES/$NEW (root-owned, read-only). Runs under the ERR trap.
+# Builds the newest commit of $BRANCH into $RELEASES/$NEW (root-owned, read-only) and keeps root's own copy of its
+# deploy files in $BUILD_WORK/src/deploy. Runs under the ERR trap.
 build_release() {
   BUILD_WORK="$(mktemp -d)"
   "${GIT[@]}" clone --quiet --depth 1 --branch "$BRANCH" "$SOURCE" "$BUILD_WORK/src"
@@ -340,9 +376,9 @@ build_release() {
   sha="$(git -C "$BUILD_WORK/src" rev-parse --short=10 HEAD)"
   NEW="$(date -u +%Y%m%d-%H%M%S)-$sha"
   info "commit $sha"
-  install -d -o root -g root -m 0755 "$RELEASES"
   BUILD_STAGE="$RELEASES/.build-$NEW"
   cp -a "$BUILD_WORK/src" "$BUILD_STAGE"
+  rm -rf "$BUILD_STAGE/.git" # never give the build a git repository root might later trust
   chown -R "$APP_USER:$APP_USER" "$BUILD_STAGE"
   BUILD_HOME="$(mktemp -d)"
   chown "$APP_USER:$APP_USER" "$BUILD_HOME"
@@ -350,15 +386,25 @@ build_release() {
   sqlite_ok "$BUILD_STAGE" || false
   as_app "$BUILD_STAGE" npm run build --silent
   [[ -f "$BUILD_STAGE/client/dist/index.html" ]] || false
-  # Freeze the build, then take the files root acts on (unit, admin commands) from root's own clone.
+  # Freeze the build: root-owned and read-only from here on.
   chown -R root:root "$BUILD_STAGE"
   chmod -R go-w "$BUILD_STAGE"
-  rm -rf "$BUILD_STAGE/deploy"
-  cp -a "$BUILD_WORK/src/deploy" "$BUILD_STAGE/deploy"
   mv -T "$BUILD_STAGE" "$RELEASES/$NEW"
   BUILD_STAGE=""
-  cleanup_build
+  install -m 0600 -o root -g root "$BUILD_WORK/src/deploy/codeclass.service" "$UNIT_DIR/$NEW.service"
+  rm -rf "$BUILD_HOME"
+  BUILD_HOME=""
   ok "built $NEW"
+}
+
+# The admin commands of the new release, from root's own clone. Replaced (not overwritten in place), so a running
+# copy of this script is not changed under its feet.
+install_commands() {
+  local name
+  for name in update uninstall; do
+    install -m 0755 -o root -g root "$BUILD_WORK/src/deploy/$name.sh" "/usr/local/sbin/.codeclass-$name.new"
+    mv -f "/usr/local/sbin/.codeclass-$name.new" "/usr/local/sbin/codeclass-$name"
+  done
 }
 
 save_branch() {
@@ -366,6 +412,7 @@ save_branch() {
   info "now following branch $BRANCH"
 }
 
+migrate_layout
 CURRENT="$(current_release)"
 
 # --- rollback -----------------------------------------------------------------------------------------------------
@@ -375,7 +422,6 @@ if [[ $ROLLBACK -eq 1 ]]; then
   [[ -n "$PREVIOUS" ]] || die "there is no older release to go back to"
   confirm "Go back from $CURRENT to $PREVIOUS?" || die "cancelled"
   activate "$PREVIOUS" "$CURRENT" 0
-  install_commands "$PREVIOUS"
   step "${G}Rolled back to $PREVIOUS${N}"
   info "The database was not changed (a backup from just now is in $BACKUP_DIR)."
   info "To return to $CURRENT: sudo codeclass-update --rollback"
@@ -388,13 +434,15 @@ if [[ $FIRST_INSTALL -eq 1 ]]; then
 else
   [[ -n "$CURRENT" ]] || die "no release is installed; run deploy/install.sh"
   step "Checking $REPO ($BRANCH)"
-  REMOTE_SHA="$("${GIT[@]}" ls-remote "$SOURCE" "refs/heads/$BRANCH" | awk '{print substr($1, 1, 10)}')" ||
-    die "couldn't reach $REPO"
+  REMOTE_SHA="$(
+    trap - ERR
+    "${GIT[@]}" ls-remote "$SOURCE" "refs/heads/$BRANCH" | awk '{print substr($1, 1, 10)}'
+  )" || die "couldn't reach $REPO"
   [[ -n "$REMOTE_SHA" ]] || die "branch '$BRANCH' was not found in $REPO"
   CURRENT_SHA="$(release_sha "$CURRENT")"
   info "installed: $CURRENT_SHA   available: $REMOTE_SHA"
-  if [[ -n "$NEW_BRANCH" && $CHECK_ONLY -eq 0 ]]; then save_branch; fi
   if [[ "$REMOTE_SHA" == "$CURRENT_SHA" && $FORCE -eq 0 ]]; then
+    if [[ -n "$NEW_BRANCH" && $CHECK_ONLY -eq 0 ]]; then save_branch; fi
     ok "CodeClass is up to date"
     exit 0
   fi
@@ -408,14 +456,15 @@ fi
 
 # --- build next to the running release, then switch ---------------------------------------------------------------
 step "Building CodeClass${CURRENT:+ (the site stays up meanwhile)}"
-trap 'cleanup_build; die "build failed on line $LINENO, so nothing was changed${CURRENT:+ and the site still runs $CURRENT}"' ERR
-trap 'cleanup_build; die "interrupted; nothing was changed"' HUP INT TERM
+trap 'die "build failed on line $LINENO, so nothing was changed${CURRENT:+ and the site still runs $CURRENT}"' ERR
+trap 'die "interrupted; nothing was changed"' HUP INT TERM
 build_release
 trap 'die "failed on line $LINENO (exit $?)"' ERR
 trap - HUP INT TERM
 
 activate "$NEW" "$CURRENT" 1
-install_commands "$NEW"
+install_commands
+if [[ -n "$NEW_BRANCH" ]]; then save_branch; fi
 prune_backups
 prune_releases
 
