@@ -56,23 +56,85 @@ Under **Languages → (a pseudocode language)**:
 Presets to start from: *Classroom* (plain English), *Starter* (first lessons), *AP CSP*, *Cambridge* (IGCSE / 9618) and
 *AQA* (GCSE).
 
-## Production
+## Installing on an Ubuntu server
+
+The scripts in `deploy/` install, update and remove CodeClass on Ubuntu 22.04 or 24.04 (64-bit). They need `sudo`.
 
 ```bash
-npm run build
-PORT=3000 npm start
+git clone https://github.com/Marquette-Catholic-High-School/coding.git
+cd coding
+sudo ./deploy/install.sh --domain codeclass.yourschool.org --email it@yourschool.org
 ```
 
-One Node process serves the API and the built client. Configuration:
+Then open the site and create the admin account. The first person to visit sets it up, so do this straight away.
+
+The installer:
+
+- installs Node.js 24 (from NodeSource) and the Caddy web server if they are missing, plus git and build tools;
+- creates a `codeclass` system user, builds the app into `/opt/codeclass/releases/…` and points
+  `/opt/codeclass/current` at it;
+- stores the database in `/var/lib/codeclass` and its settings in `/etc/codeclass/codeclass.env`;
+- runs the app as the hardened `codeclass` systemd service, listening only on `127.0.0.1:3000`;
+- has Caddy serve the site with a free, auto-renewing HTTPS certificate from Let's Encrypt. The domain must already
+  point at the server, with ports 80 and 443 reachable. If `ufw` is active, those ports are opened.
+
+Ways to run the installer:
+
+| Command | Use when |
+|---|---|
+| `install.sh --domain NAME [--email ADDR]` | The server has a public name. Recommended. |
+| `install.sh --http` | Testing, or a trusted internal network with no public name. Plain HTTP on port 80. |
+| `install.sh --no-proxy --port 8080` | You already run your own reverse proxy. The app listens on all interfaces. |
+
+Without HTTPS, browsers won't let programs pause for typed input. Programs then read from an "Input for your program"
+box instead, and sign-in cookies travel unencrypted. Use `--domain` whenever you can.
+
+Other options are `--branch NAME`, `--repo URL`, `--port PORT` and `--yes` (no questions). See `install.sh --help`.
+
+### Updating
+
+```bash
+sudo codeclass-update            # build the newest commit of the branch and switch to it
+sudo codeclass-update --check    # only report whether an update is available
+sudo codeclass-update --rollback # switch back to the previous release
+```
+
+The new version builds while the old one keeps serving. The site is then offline for a few seconds while it switches
+over. Before switching, the database is copied to `/var/lib/codeclass/backups` (the newest 10 copies are kept). If the
+new version doesn't start properly, the updater puts the previous version and the database back by itself. The
+newest 3 releases are kept for rollbacks.
+
+### Uninstalling
+
+```bash
+sudo codeclass-uninstall          # removes the app and service; keeps the database, backups and settings
+sudo codeclass-uninstall --purge  # also deletes all data, the settings and the codeclass user
+```
+
+Node.js and Caddy are left installed, because other software may use them.
+
+### Running it
+
+| Task | Command |
+|---|---|
+| Status / restart | `systemctl status codeclass` · `sudo systemctl restart codeclass` |
+| Logs | `journalctl -u codeclass -f` (web server: `journalctl -u caddy`) |
+| Settings | edit `/etc/codeclass/codeclass.env`, then restart |
+| Back up | copy `/var/lib/codeclass/codeclass.db` (and its `-wal` file, if present). Or use the copies the updater makes |
+| Restore a backup | `sudo systemctl stop codeclass`, copy the backup over `codeclass.db` (delete any `-wal`/`-shm` files), start again |
+
+Settings in `codeclass.env`:
 
 | Variable | Default | Meaning |
 |---|---|---|
-| `PORT` | `3000` | HTTP port (production) |
-| `DATABASE_PATH` | `data/codeclass.db` | SQLite file. Back up this file (and its `-wal` file) |
-| `COOKIE_SECURE` | unset | Set to `1` when served over HTTPS (recommended) |
+| `PORT` | `3000` | Port the app listens on |
+| `HOST` | every interface | `127.0.0.1` behind the reverse proxy |
+| `DATABASE_PATH` | `data/codeclass.db` | SQLite database file |
+| `COOKIE_SECURE` | unset | `1` when the site is served over HTTPS |
 
-Put CodeClass behind an HTTPS reverse proxy (Caddy, nginx). Responses carry `Cross-Origin-Opener-Policy` and
-`Cross-Origin-Embedder-Policy` headers. Programs need them to pause for typed input, so the proxy must not strip them.
+To run it by hand somewhere else, use `npm ci && npm run build && npm start`. Any reverse proxy you use must pass
+through the `Cross-Origin-Opener-Policy` and `Cross-Origin-Embedder-Policy` headers. Programs need them to pause for
+typed input.
 
 ## Development
 

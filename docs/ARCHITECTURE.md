@@ -26,6 +26,7 @@ docs/     this file + UI style guide
 | `npm run typecheck` | `tsc --noEmit` for shared, server, client |
 | `npm test` | vitest (shared + server tests + client unit tests); server tests use an in-memory DB per file |
 | `npm run build && npm start` | production: one server on `PORT` (default 3000) serving API + `client/dist` |
+| `sudo deploy/install.sh` | Ubuntu server install (Node 24, Caddy HTTPS, systemd); then `codeclass-update` / `codeclass-uninstall` (see README) |
 
 Imports are extensionless (`moduleResolution: bundler`; tsx and Vite resolve `.ts`). `@codeclass/shared` and
 `@codeclass/shared/pseudocode` are consumed as TypeScript source. TS is strict with `noUnusedLocals/Parameters`,

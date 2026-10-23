@@ -5,6 +5,7 @@ import express, { type Request, type RequestHandler, type Response } from 'expre
 import { PYODIDE_INDEX_URL } from '@codeclass/shared';
 import { hasCsrfToken, loadUser } from './auth';
 import { config } from './config';
+import { db } from './db';
 import { errorHandler, HttpError, notFound } from './http';
 import { router as adminUsersRouter } from './routes/adminUsers';
 import { router as assignmentsRouter } from './routes/assignments';
@@ -79,6 +80,11 @@ export function createApp() {
   app.use(isolationHeaders);
 
   const api = express.Router();
+  // Liveness check for install/update scripts and monitoring: no session, and it proves the database answers.
+  api.get('/health', (_req, res) => {
+    db.prepare('SELECT 1').get();
+    res.json({ ok: true });
+  });
   api.use(express.json({ limit: '1mb' }));
   api.use(cookieParser());
   api.use(loadUser);

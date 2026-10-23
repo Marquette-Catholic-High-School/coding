@@ -1,0 +1,43 @@
+# CodeClass systemd unit. Rendered by deploy/install.sh and deploy/update.sh:
+# @NODE@ is replaced with the Node.js binary, @APP_HOME@ and @DATA_DIR@ with the install paths.
+[Unit]
+Description=CodeClass classroom coding website
+Documentation=https://github.com/Marquette-Catholic-High-School/coding
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=codeclass
+Group=codeclass
+WorkingDirectory=@APP_HOME@/current/server
+EnvironmentFile=/etc/codeclass/codeclass.env
+ExecStart=@NODE@ @APP_HOME@/current/node_modules/tsx/dist/cli.mjs src/index.ts
+Restart=on-failure
+RestartSec=5
+# The app finishes open requests and closes the database on SIGTERM.
+TimeoutStopSec=20
+
+# Hardening: the app only writes to its data directory (database and backups).
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=@DATA_DIR@
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+UMask=0027
+# Not set on purpose: MemoryDenyWriteExecute (V8's JIT needs writable + executable memory).
+
+[Install]
+WantedBy=multi-user.target

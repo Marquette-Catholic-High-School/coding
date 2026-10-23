@@ -19,6 +19,12 @@ describe('foundation', () => {
     expect(res.status).toBe(404);
   });
 
+  it('answers the health check without a session', async () => {
+    const res = await fetch(`${srv.base}/health`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ ok: true });
+  });
+
   it('can create a signed-in client directly', async () => {
     const u = insertUser('teacher');
     const c = clientAs(srv.base, u.id);
