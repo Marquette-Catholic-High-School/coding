@@ -109,6 +109,136 @@ export function textChars(text: string): string | string[] {
   return SURROGATE.test(text) ? Array.from(text) : text;
 }
 
+/** Text this short is measured directly: cheaper than a cache lookup. */
+const SHORT_TEXT = 32;
+/** Texts remembered by a TextIndex (most recently used first). */
+const TEXT_INDEX_SIZE = 8;
+
+/** The characters of a text: `chars[0]` … `chars[length - 1]` (an array may hold more, shared with a longer text). */
+export interface TextView {
+  readonly chars: string | readonly string[];
+  /** Number of characters (an emoji counts as one). */
+  readonly length: number;
+}
+
+interface TextInfo {
+  text: string;
+  length: number;
+  /** The text itself when it has no surrogate code units, else its characters; null until first needed. */
+  chars: string | string[] | null;
+  /** Whether the text holds any surrogate code unit (so it must be split with Array.from to index it). */
+  surrogates: boolean;
+  /** Whether it starts with the second half of a surrogate pair, or ends with the first half (for joining). */
+  startsLow: boolean;
+  endsHigh: boolean;
+}
+
+function describeText(text: string): TextInfo {
+  const chars = textChars(text);
+  const surrogates = typeof chars !== 'string';
+  return {
+    text,
+    length: chars.length,
+    chars,
+    surrogates,
+    startsLow: surrogates && isLowSurrogate(text.charCodeAt(0)),
+    endsHigh: surrogates && isHighSurrogate(text.charCodeAt(text.length - 1)),
+  };
+}
+
+/**
+ * Characters and lengths of the texts a program is working with. Finding the characters means reading the whole text,
+ * so `FOR i FROM 1 TO LENGTH(s) … s[i] …` would take time proportional to the square of the length. This remembers the
+ * answer for the last few texts (found by comparing strings, which is instant for the same string), and works out
+ * `a + b` from what it knows about `a` and `b`, so text built up a character at a time isn't re-read either (an emoji
+ * text's character list grows in place). One per run, so nothing outlives the program.
+ */
+export class TextIndex {
+  private readonly recent: TextInfo[] = [];
+
+  /** The characters of `text`, as `textChars` would give them. */
+  view(text: string): TextView {
+    if (text.length <= SHORT_TEXT) {
+      const chars = textChars(text);
+      return { chars, length: chars.length };
+    }
+    const info = this.find(text) ?? this.remember(describeText(text));
+    if (info.chars === null) info.chars = textChars(text);
+    return info as TextView;
+  }
+
+  /** How many characters `text` has (an emoji counts as one). */
+  length(text: string): number {
+    if (text.length <= SHORT_TEXT) return textChars(text).length;
+    return (this.find(text) ?? this.remember(describeText(text))).length;
+  }
+
+  /**
+   * `a + b`, remembering what is known about it when a long `a` or `b` is already remembered (and the other is too, or
+   * is short). Text nobody has measured or indexed yet isn't tracked, so plain joining stays as cheap as before.
+   */
+  join(a: string, b: string): string {
+    const text = a + b;
+    const longA = a.length > SHORT_TEXT;
+    const longB = b.length > SHORT_TEXT;
+    if (!longA && !longB) return text;
+    const foundA = longA ? this.find(a) : null;
+    if (longA && !foundA) return text;
+    const foundB = longB ? this.find(b) : null;
+    if (longB && !foundB) return text;
+    const left = foundA ?? describeText(a);
+    const right = foundB ?? describeText(b);
+    // A pair split across the join (a ends with the first half of an emoji, b starts with the second) is one character.
+    const pair = left.endsHigh && right.startsLow;
+    const surrogates = left.surrogates || right.surrogates;
+    let chars: string | string[] | null = surrogates ? null : text;
+    const list = left.chars;
+    if (surrogates && !pair && Array.isArray(list) && list.length === left.length && right.chars !== null) {
+      // Nothing has been added after `a` yet, so its character list can grow to become this text's.
+      const add = right.chars;
+      for (let n = 0; n < right.length; n++) list.push(add[n]!);
+      chars = list;
+    }
+    this.remember({
+      text,
+      length: left.length + right.length - (pair ? 1 : 0),
+      chars,
+      surrogates,
+      startsLow: a.length > 0 ? left.startsLow : right.startsLow,
+      endsHigh: b.length > 0 ? right.endsHigh : left.endsHigh,
+    });
+    return text;
+  }
+
+  private find(text: string): TextInfo | null {
+    const recent = this.recent;
+    for (let n = 0; n < recent.length; n++) {
+      const info = recent[n]!;
+      if (info.text !== text) continue;
+      if (n > 0) {
+        recent.splice(n, 1);
+        recent.unshift(info);
+      }
+      return info;
+    }
+    return null;
+  }
+
+  private remember(info: TextInfo): TextInfo {
+    this.recent.unshift(info);
+    if (this.recent.length > TEXT_INDEX_SIZE) this.recent.pop();
+    return info;
+  }
+}
+
+function isHighSurrogate(code: number): boolean {
+  return code >= 0xd800 && code <= 0xdbff;
+}
+
+function isLowSurrogate(code: number): boolean {
+  return code >= 0xdc00 && code <= 0xdfff;
+}
+
 /** Number for numeric-looking text ("42", " -3.5 "), otherwise null. */
 export function parseNumericText(text: string): number | null {
   return NUMERIC.test(text) ? Number(text.trim()) : null;

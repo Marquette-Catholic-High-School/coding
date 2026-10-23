@@ -12,3 +12,17 @@ export function validateClassLanguages(languageIds: readonly string[]): string |
 export function languagePickerEnterSubmits(dropdownOpen: boolean, search: string): boolean {
   return !dropdownOpen && search.trim() === '';
 }
+
+/**
+ * The language Enter adds when nothing is highlighted: the first unpicked option whose label contains the typed filter
+ * (the same match Mantine's list uses). Null when no filter is typed or nothing matches.
+ */
+export function firstLanguageMatch(
+  options: ReadonlyArray<{ value: string; label: string }>,
+  picked: readonly string[],
+  search: string,
+): string | null {
+  const query = search.trim().toLowerCase();
+  if (!query) return null;
+  return options.find((o) => !picked.includes(o.value) && o.label.toLowerCase().includes(query))?.value ?? null;
+}

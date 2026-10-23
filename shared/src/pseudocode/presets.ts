@@ -23,13 +23,23 @@ const CONSTRUCTS: readonly PseudoConstruct[] = [
 
 const SPELLING = /^[A-Za-z_][A-Za-z0-9_]*(?: [A-Za-z_][A-Za-z0-9_]*)*$/;
 const IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
-/** Symbols that already mean something on their own, so they can't start a comment. */
-const OPERATOR_SYMBOLS = new Set([
-  '+', '-', '*', '/', '^', '&', '=', '<', '>', '(', ')', '[', ']', '{', '}', ',', ':', ';', '.', '←', '≠', '≤', '≥',
-  '<=', '>=', '==', '!=', '<>', '<-', ':=',
+/**
+ * The symbols a teacher may choose to start comments. The lexer looks for comments before operators, so any other symbol
+ * risks swallowing code written without spaces (`!` starts `!=`, `((` starts `((1 + 2) * 3)`, `*(` is in `2*(1+2)`), and
+ * `'` starts text. With `--`, subtracting a negative number needs a space (`5 - -2`, since `5--2` is `5` and a comment);
+ * with `;`, a semicolon no longer separates two instructions on one line.
+ */
+export const COMMENT_PREFIXES: readonly string[] = ['//', '#', '--', '%', ';'];
+/** Keyword slots whose words may also be names (the parser's connector words, DECLARE and CONSTANT). */
+const NAME_LIKE_SLOTS: ReadonlySet<PseudoKeyword> = new Set<PseudoKeyword>([
+  'set', 'to', 'from', 'step', 'times', 'do', 'then', 'call', 'in', 'declare', 'constant',
 ]);
-/** Symbols a value can follow, so `<symbol>-` and `<symbol>+` appear in ordinary code: 5--3, x=-1, (-2), [1,-2]. */
-const BEFORE_VALUE = new Set(['+', '-', '*', '/', '^', '&', '=', '<', '>', '≠', '≤', '≥', '←', '(', '[', ',']);
+/** Keyword slots that start a value, so they can follow IF, WHILE, OUTPUT, RETURN … (`IF NOT done`). */
+const VALUE_SLOTS: ReadonlySet<PseudoKeyword> = new Set<PseudoKeyword>(['true', 'false', 'not', 'input', 'mod', 'div']);
+/** Keyword slots that end or continue a block; several may share a line (`END IF END WHILE`). */
+const CLOSER_SLOTS: ReadonlySet<PseudoKeyword> = new Set<PseudoKeyword>([
+  'elseIf', 'else', 'endIf', 'endWhile', 'endRepeat', 'until', 'endFor', 'endFunction', 'endProcedure',
+]);
 const MAX_SPELLINGS = 8;
 const MAX_WORD_LENGTH = 40;
 
@@ -379,20 +389,22 @@ function cleanSpelling(raw: unknown): string | null {
 
 function commentPrefixProblem(prefix: string): string | null {
   if (prefix.length === 0) return "Comment symbols can't be empty.";
-  if (prefix.length > 4) return `Comment symbol "${prefix}" is too long — use at most 4 characters.`;
-  if (/[\p{L}\p{N}_]/u.test(prefix)) return `Comment symbol "${prefix}" can't contain letters or digits.`;
-  if (/\s/.test(prefix)) return `Comment symbol "${prefix}" can't contain spaces.`;
-  if (/["'“”‘’]/.test(prefix)) return `Comment symbol "${prefix}" can't contain quote marks.`;
-  if (OPERATOR_SYMBOLS.has(prefix)) return `"${prefix}" can't start comments because it's already an operator.`;
-  // The lexer looks for comments before operators, so a prefix must not swallow code that is valid without spaces.
-  const longer = [...OPERATOR_SYMBOLS].find((op) => op.length > prefix.length && op.startsWith(prefix));
-  if (longer) return `"${prefix}" can't start comments because the "${longer}" operator starts with it.`;
-  const [first, second] = [prefix[0]!, prefix[1]];
-  if ((second === '-' || second === '+') && BEFORE_VALUE.has(first)) {
-    const example = first === '(' ? `(${second}2)` : first === '[' ? `[${second}2]` : first === ',' ? `(1,${second}2)` : `5${first}${second}2`;
-    return `"${prefix}" can't start comments because code like ${example} uses those symbols.`;
-  }
-  return null;
+  if (COMMENT_PREFIXES.includes(prefix)) return null;
+  const choices = `${COMMENT_PREFIXES.slice(0, -1).join(', ')} or ${COMMENT_PREFIXES[COMMENT_PREFIXES.length - 1]}`;
+  return `"${prefix}" can't start comments — choose from ${choices}.`;
+}
+
+/**
+ * Whether `short` followed by the keyword `next` (a spelling of `nextSlot`) can be written as two separate keywords in a
+ * working program. If it can, a longer spelling `short next` of the same keyword would change what that code means.
+ */
+function keywordsCanFollow(shortSlot: PseudoKeyword, nextSlot: PseudoKeyword): boolean {
+  // ELSE IF and REPEAT UNTIL: the parser reads a longer spelling that ends in IF / UNTIL the same way.
+  if ((shortSlot === 'else' && nextSlot === 'if') || (shortSlot === 'repeat' && nextSlot === 'until')) return false;
+  if (VALUE_SLOTS.has(nextSlot)) return true;
+  // An instruction may follow THEN, DO and ELSE on the same line; a closing word may follow another one.
+  if (shortSlot === 'then' || shortSlot === 'do' || shortSlot === 'else') return true;
+  return CLOSER_SLOTS.has(shortSlot) && CLOSER_SLOTS.has(nextSlot);
 }
 
 /**
@@ -497,6 +509,14 @@ export function validatePseudocodeConfig(config: PseudocodeConfig): string[] {
 
   // Keyword spellings
   const rawKeywords = isRecord(cfg.keywords) ? cfg.keywords : {};
+  const spellingsOf = (slot: PseudoKeyword): string[] => {
+    const list = rawKeywords[slot];
+    return Array.isArray(list) ? list.filter((item): item is string => typeof item === 'string' && SPELLING.test(item)) : [];
+  };
+  const singleWordSlots = new Map<string, PseudoKeyword>(); // one-word spelling key → its keyword
+  for (const info of KEYWORD_INFO) {
+    for (const s of spellingsOf(info.id)) if (!s.includes(' ') && !singleWordSlots.has(key(s))) singleWordSlots.set(key(s), info.id);
+  }
   const owners = new Map<string, string>(); // spelling key → keyword label
   for (const info of KEYWORD_INFO) {
     const list = rawKeywords[info.id];
@@ -505,16 +525,26 @@ export function validatePseudocodeConfig(config: PseudocodeConfig): string[] {
       continue;
     }
     if (list.length > MAX_SPELLINGS) add(`"${info.label}" can have at most ${MAX_SPELLINGS} spellings.`);
-    const valid = list.filter((item): item is string => typeof item === 'string' && SPELLING.test(item));
+    const valid = spellingsOf(info.id);
     for (const short of valid) {
       for (const long of valid) {
-        // The lexer joins words greedily, so the longer spelling swallows a name written after the shorter one.
+        // The lexer joins words greedily, so `short next` is always read as the longer spelling. That's harmless when
+        // `next` is a keyword that can't follow `short` anyway (END / END IF), but not when it could be a name or a
+        // keyword that changes the meaning (IF / IF NOT would drop the NOT).
         if (!key(long).startsWith(`${key(short)} `)) continue;
-        const name = long.split(' ')[short.split(' ').length]!;
-        add(
-          `"${long}" and "${short}" are both spellings of "${info.label}", so ${short} followed by a name called ` +
-            `${name} would be read as ${long}. Keep just one of them.`,
-        );
+        const next = long.split(' ')[short.split(' ').length]!;
+        const nextSlot = singleWordSlots.get(key(next));
+        if (nextSlot === undefined || NAME_LIKE_SLOTS.has(nextSlot)) {
+          add(
+            `"${long}" and "${short}" are both spellings of "${info.label}", so ${short} followed by a name called ` +
+              `${next} would be read as ${long}. Keep just one of them.`,
+          );
+        } else if (keywordsCanFollow(info.id, nextSlot)) {
+          add(
+            `"${long}" and "${short}" are both spellings of "${info.label}", so ${short} followed by ${next} would be ` +
+              `read as ${long}. Keep just one of them.`,
+          );
+        }
       }
     }
     for (const item of list) {

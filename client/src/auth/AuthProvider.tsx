@@ -47,14 +47,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [queryClient],
   );
 
-  // Signs out locally even when the request fails; it still rejects then, so callers can say so.
+  // Only forgets the user once the server has ended the session. If the request fails the session is still open
+  // (a reload would sign the user straight back in), so stay signed in and let the caller say so.
   const logout = useCallback(async () => {
-    try {
-      await api.post('/auth/logout');
-    } finally {
-      setSignedOut(true);
-      resetSessionCache(queryClient);
-    }
+    await api.post('/auth/logout');
+    setSignedOut(true);
+    resetSessionCache(queryClient);
   }, [queryClient]);
 
   const value = useMemo<AuthContextValue>(
@@ -80,16 +78,18 @@ export function useAuth(): AuthContextValue {
 }
 
 /**
- * Sign-out for buttons: never rejects. If the server can't be reached the user is still signed out on this device,
- * with a notification saying the server session may still be open.
+ * Sign-out for buttons: never rejects. Resolves true once signed out; if the server can't be reached the user stays
+ * signed in (their session is still open) and a notification asks them to try again.
  */
-export function useSignOut(): () => Promise<void> {
+export function useSignOut(): () => Promise<boolean> {
   const { logout } = useAuth();
   return useCallback(async () => {
     try {
       await logout();
+      return true;
     } catch (err) {
-      notifyError(err, "Couldn't reach the server to end your session");
+      notifyError(err, "Couldn't sign out — try again");
+      return false;
     }
   }, [logout]);
 }

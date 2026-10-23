@@ -12,6 +12,7 @@ class FakeWorker {
   readonly messages: MainToWorker[] = [];
   terminated = false;
   private readonly listeners: ((event: { data: WorkerToMain }) => void)[] = [];
+  private readonly errorListeners: ((event: { message: string; preventDefault(): void }) => void)[] = [];
 
   constructor(_url: URL, readonly options: { name?: string }) {
     FakeWorker.all.push(this);
@@ -23,6 +24,12 @@ class FakeWorker {
 
   addEventListener(type: string, listener: (event: { data: WorkerToMain }) => void): void {
     if (type === 'message') this.listeners.push(listener);
+    if (type === 'error') this.errorListeners.push(listener as unknown as (typeof this.errorListeners)[number]);
+  }
+
+  /** The worker dies (an uncaught error in it, or running out of memory). */
+  crash(message: string): void {
+    for (const listener of this.errorListeners) listener({ message, preventDefault() {} });
   }
 
   terminate(): void {
@@ -48,6 +55,7 @@ class FakeWorker {
 }
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+const text = (chunks: readonly OutputChunk[]) => chunks.map((c) => c.text).join('');
 
 async function load(isolated: boolean) {
   vi.resetModules();
@@ -220,6 +228,45 @@ describe('output a stuck program could not send', () => {
       { stream: 'stderr', text: 'third\n' },
     ]);
     expect(outcome.stdout).toBe('first\nsecond\n');
+  });
+
+  it('appears while the program is still busy, and is not repeated when it arrives', async () => {
+    const rt = await load(true);
+    const shown: OutputChunk[] = [];
+    const handle = rt.startRun({ kind: 'python' }, 'code', { interactive: true, onOutput: (c) => shown.push(c) });
+    const worker = FakeWorker.all[0]!;
+    worker.emit({ type: 'phase', id: worker.lastRun().id, phase: 'running' });
+    const out = workerOutput(worker);
+    out.write('stdout', 'first\n');
+    out.write('stdout', 'second\n');
+    expect(text(shown)).toBe('first\n');
+    // The program keeps computing without printing again: the page polls the tail.
+    await vi.waitFor(() => expect(text(shown)).toBe('first\nsecond\n'));
+    out.write('stderr', 'third\n');
+    out.flush();
+    worker.finish();
+    const outcome = await handle.done;
+    expect(shown).toEqual([
+      { stream: 'stdout', text: 'first\n' },
+      { stream: 'stdout', text: 'second\n' },
+      { stream: 'stderr', text: 'third\n' },
+    ]);
+    expect(outcome.stdout).toBe('first\nsecond\n');
+  });
+
+  it('still reaches the console when the worker crashes', async () => {
+    const rt = await load(true);
+    const shown: OutputChunk[] = [];
+    const handle = rt.startRun({ kind: 'python' }, 'code', { interactive: true, onOutput: (c) => shown.push(c) });
+    const worker = FakeWorker.all[0]!;
+    const out = workerOutput(worker);
+    out.write('stdout', 'one\n');
+    out.write('stdout', 'two\n');
+    worker.crash('out of memory');
+    const outcome = await handle.done;
+    expect(outcome.status).toBe('error');
+    expect(outcome.error?.message).toContain('out of memory');
+    expect(text(shown)).toBe('one\ntwo\n');
   });
 
   it('is part of a test that timed out', async () => {

@@ -229,12 +229,17 @@ router.patch('/assignments/:id', requireStaff, (req, res) => {
   validateTests(kind, tests);
   if (sent('points')) {
     // Grades must stay within 0..points; existing grades are never rescaled.
+    // Only students still in the class count: grades of students who left can't be edited any more.
     const maxGrade = db
-      .prepare('SELECT MAX(grade) FROM submissions WHERE assignment_id = ? AND grade IS NOT NULL')
+      .prepare(
+        `SELECT MAX(s.grade) FROM submissions s
+         JOIN enrollments e ON e.user_id = s.student_id AND e.class_id = ?
+         WHERE s.assignment_id = ? AND s.grade IS NOT NULL`,
+      )
       .pluck()
-      .get(assignment.id) as number | null;
+      .get(assignment.class_id, assignment.id) as number | null;
     if (maxGrade != null && maxGrade > parsed.points!) {
-      const msg = `Some students already have grades up to ${maxGrade}. Lower those grades first, or keep at least ${maxGrade} points.`;
+      const msg = `Some students already have grades up to ${maxGrade}. Lower those grades first, or keep at least ${Math.ceil(maxGrade)} points.`;
       throw badRequest(msg, { points: msg });
     }
   }

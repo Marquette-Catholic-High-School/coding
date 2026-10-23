@@ -20,7 +20,7 @@ export interface RunRequest {
   stdin: string[];
   inputMode: InputMode;
   channel: SharedArrayBuffer | null;
-  /** Shared memory the worker mirrors unsent output into (see outputTail.ts); null without cross-origin isolation. */
+  /** Shared memory the worker mirrors its output into (see outputTail.ts); null without cross-origin isolation. */
   tail: SharedArrayBuffer | null;
   pseudocode: PseudocodeConfig | null;
 }
@@ -41,7 +41,7 @@ export type MainToWorker = RunRequest | PreloadRequest | ReplayInput;
 
 export type WorkerToMain =
   | { type: 'phase'; id: number; phase: Exclude<RunPhase, 'waiting-input'> }
-  /** `batch` counts the run's output messages from 1 (the main thread acknowledges them in the output tail). */
+  /** `batch` counts the run's output messages from 1 (the page acknowledges them in the output tail). */
   | { type: 'output'; id: number; batch: number; chunks: OutputChunk[] }
   | { type: 'input-request'; id: number; prompt: string | null }
   | {
@@ -67,5 +67,10 @@ export const OUTPUT_FLUSH_MS = 30;
  * or an endless loop must not wait for it.
  */
 export const OUTPUT_BURST = 20;
+/**
+ * How often the page reads the output tail while a program runs (outputTail.ts), so output a worker held back
+ * still shows while the program is busy in a long computation or stuck in a loop.
+ */
+export const OUTPUT_TAIL_POLL_MS = 100;
 export const TIMEOUT_MESSAGE = 'Took too long — is there a loop that never ends?';
 export const DEFAULT_TEST_TIMEOUT_MS = 10_000;

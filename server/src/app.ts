@@ -57,19 +57,17 @@ const PYODIDE_ORIGIN = new URL(PYODIDE_INDEX_URL).origin;
 
 /**
  * Content-Security-Policy for the code-runner worker script (a worker's CSP comes from its own script response).
- * Its network access is limited to the Pyodide CDN and our built `/assets/` (sql.js and wasmoon wasm), so student code
- * can't reach `/api`. Keep in step with the dev-server policy in client/vite.config.ts.
+ * Student code may only reach our own origin (the sql.js / wasmoon wasm under /assets/) and the Pyodide CDN, so it can't
+ * send anything elsewhere, and it can't start nested workers. Same-origin `/api` calls from a worker are refused by
+ * `requireCsrfToken` because workers can't read the token cookie. Same policy as the dev server (client/vite.config.ts).
  */
-function runnerWorkerCsp(req: Request): string {
-  // `req.host` is the Host header (or X-Forwarded-Host from a loopback proxy), port included.
-  const host: unknown = req.host;
-  const assets = typeof host === 'string' && /^[\w.:[\]-]+$/.test(host) ? ` ${req.protocol}://${host}/assets/` : '';
-  return [
-    "default-src 'none'",
-    `script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval' ${PYODIDE_ORIGIN}`,
-    `connect-src ${PYODIDE_ORIGIN}${assets}`,
-  ].join('; ');
-}
+const RUNNER_WORKER_CSP = [
+  "default-src 'none'",
+  `script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval' ${PYODIDE_ORIGIN}`,
+  `connect-src 'self' ${PYODIDE_ORIGIN}`,
+  "worker-src 'none'",
+  "child-src 'none'",
+].join('; ');
 
 /** The built runner worker, e.g. `assets/worker-mDjuYiji.js`. */
 const RUNNER_WORKER_FILE = /[\\/]assets[\\/]worker-[\w-]+\.js$/;
@@ -108,7 +106,7 @@ export function createApp() {
         index: false,
         maxAge: '1h',
         setHeaders: (res: Response, filePath) => {
-          if (RUNNER_WORKER_FILE.test(filePath)) res.setHeader('Content-Security-Policy', runnerWorkerCsp(res.req));
+          if (RUNNER_WORKER_FILE.test(filePath)) res.setHeader('Content-Security-Policy', RUNNER_WORKER_CSP);
         },
       }),
     );

@@ -6,6 +6,7 @@ export {
   PSEUDOCODE_PRESETS,
   DEFAULT_PRESET_ID,
   ASSIGN_OPERATORS,
+  COMMENT_PREFIXES,
   createPseudocodeConfig,
   normalizePseudocodeConfig,
   validatePseudocodeConfig,

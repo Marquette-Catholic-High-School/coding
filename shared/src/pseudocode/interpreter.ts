@@ -11,7 +11,7 @@ import {
   looselyEqual,
   numbersEqual,
   parseNumericText,
-  textChars,
+  TextIndex,
   typeLabel,
   type BoolWords,
   type Value,
@@ -59,6 +59,8 @@ export class Interpreter {
   private readonly words: BoolWords;
   private readonly separator: string;
   private readonly lineEnd: string;
+  /** Characters and lengths of the texts being worked with (so `s[i]` in a loop doesn't re-read `s` every time). */
+  private readonly text = new TextIndex();
 
   constructor(program: A.Program, lang: Language, io: PseudoIO, limits: InterpreterLimits) {
     this.program = program;
@@ -391,8 +393,8 @@ export class Interpreter {
   private indexValue(container: Value, index: Value, e: A.IndexExpr): Value {
     if (Array.isArray(container)) return container[this.position(index, container.length, e.index, false)]!;
     if (typeof container === 'string') {
-      const chars = textChars(container);
-      return chars[this.position(index, chars.length, e.index, true)]!;
+      const text = this.text.view(container);
+      return text.chars[this.position(index, text.length, e.index, true)]!;
     }
     throw runtimeError(`You can only use [ ] on a list or text, but this is ${describeValue(container, this.words)}.`, e.target);
   }
@@ -494,10 +496,10 @@ export class Interpreter {
       case '!=':
         return !looselyEqual(l, r);
       case '&':
-        return formatValue(l, this.words) + formatValue(r, this.words);
+        return this.text.join(formatValue(l, this.words), formatValue(r, this.words));
       case '+':
         if (typeof l === 'string' || typeof r === 'string') {
-          if (this.lang.concatPlus) return formatValue(l, this.words) + formatValue(r, this.words);
+          if (this.lang.concatPlus) return this.text.join(formatValue(l, this.words), formatValue(r, this.words));
           throw runtimeError("You can't add text.", e.opPos, this.lang.concatAmp ? 'To join text, use & — for example "Hi " & name.' : undefined);
         }
         if (Array.isArray(l) && Array.isArray(r)) {
@@ -689,7 +691,7 @@ export class Interpreter {
       case 'length': {
         const v = args[0]!;
         if (Array.isArray(v)) return v.length;
-        if (typeof v === 'string') return textChars(v).length;
+        if (typeof v === 'string') return this.text.length(v);
         throw runtimeError(`${name} needs a list or some text, but got ${describeValue(v, this.words)}.`, e.args[0]!);
       }
       case 'append': {
@@ -752,7 +754,7 @@ export class Interpreter {
         return id === 'upper' ? text.toUpperCase() : text.toLowerCase();
       }
       case 'substring': {
-        const text = textChars(this.textArg(args[0]!, name, e.args[0]!));
+        const text = this.text.view(this.textArg(args[0]!, name, e.args[0]!));
         const start = this.wholeNumber(args[1]!, name, 'start position', e.args[1]!);
         const length = this.wholeNumber(args[2]!, name, 'length', e.args[2]!);
         const i = start - base;
@@ -761,8 +763,8 @@ export class Interpreter {
           throw runtimeError(`${name} can't start at position ${start} — ${range}.`, e.args[1]!);
         }
         if (length < 0) throw runtimeError(`${name} needs a length of 0 or more.`, e.args[2]!);
-        const part = text.slice(i, i + length);
-        return typeof part === 'string' ? part : part.join('');
+        const end = Math.min(i + length, text.length);
+        return typeof text.chars === 'string' ? text.chars.slice(i, end) : text.chars.slice(i, end).join('');
       }
       case 'abs':
         return Math.abs(this.numberArg(args[0]!, name, e.args[0]!));

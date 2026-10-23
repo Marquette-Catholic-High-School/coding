@@ -3,7 +3,6 @@ import {
   Alert,
   AppShell,
   Avatar,
-  Badge,
   Burger,
   Button,
   Divider,
@@ -39,6 +38,7 @@ import { useEffect } from 'react';
 import { Link, Outlet, useLocation, useNavigate, useNavigationType } from 'react-router';
 import { useClasses } from '../api/classes';
 import { isStaff, useCurrentUser, useSignOut } from '../auth/AuthProvider';
+import { RoleBadge } from '../components/badges';
 import { BrandMark } from '../components/BrandMark';
 
 function ColorSchemeToggle() {
@@ -89,8 +89,7 @@ function AccountMenu() {
           color="red"
           leftSection={<IconLogout size={16} />}
           onClick={async () => {
-            await signOut();
-            navigate('/login', { replace: true });
+            if (await signOut()) navigate('/login', { replace: true });
           }}
         >
           Sign out
@@ -215,9 +214,7 @@ export function AppLayout() {
             <Text size="xs" c="dimmed">
               Signed in as @{user.username}
             </Text>
-            <Badge variant="light" size="xs" tt="capitalize">
-              {user.role}
-            </Badge>
+            <RoleBadge role={user.role} />
           </Group>
         </AppShell.Section>
       </AppShell.Navbar>

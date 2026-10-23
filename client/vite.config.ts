@@ -10,14 +10,15 @@ const isolationHeaders = {
 
 /**
  * Content-Security-Policy for the code-runner worker script (a worker's CSP comes from its own script response): the
- * dev twin of the production policy in server/src/app.ts. https://cdn.jsdelivr.net is the Pyodide CDN
- * (PYODIDE_INDEX_URL). In production connect-src is limited to the built /assets/; in dev the wasm files come from
- * node_modules, so it allows 'self'.
+ * same policy the production server sends (server/src/app.ts). https://cdn.jsdelivr.net is the Pyodide CDN
+ * (PYODIDE_INDEX_URL).
  */
 const RUNNER_WORKER_CSP = [
   "default-src 'none'",
   "script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval' https://cdn.jsdelivr.net",
   "connect-src 'self' https://cdn.jsdelivr.net",
+  "worker-src 'none'",
+  "child-src 'none'",
 ].join('; ');
 
 /** The runner worker: `/src/runtime/worker.ts?worker_file&type=module` in dev, `/assets/worker-<hash>.js` when built. */

@@ -118,9 +118,14 @@ Contract in `runtime/types.ts` + `runtime/index.ts` + `runtime/useCodeRunner.ts`
   via `?url`; fresh DB per run; every result set printed as a plain-text table); Pseudocode (`runPseudocode` from `@codeclass/shared/pseudocode` with the language's config);
   Web (not a console runner — `WebPreview` renders it).
 - Output: a worker sends writes straight away until 20 messages went out in one ≈30 ms window, then batches them
-  (programs that never yield would otherwise hold back their last lines). Held-back output is mirrored into a
-  `SharedArrayBuffer` tail (`outputTail.ts`) that the page reads on Stop/timeout, so a program stuck in a loop still
-  shows what it printed. Capped at 1 MB ("Output limit reached" system line). `useCodeRunner` keeps the transcript
+  (programs that never yield would otherwise hold back their last lines). When the page is cross-origin isolated,
+  every write is also mirrored into a `SharedArrayBuffer` tail (`outputTail.ts`) that holds the output the page has
+  not received yet. The worker drops batches once they arrive, and the tail has room for the whole output cap. The
+  page reads the tail every 100 ms while the program runs, and once more on Stop, timeout or a worker crash. Batches
+  that arrive later leave out what the tail already showed. So a program busy in a long computation or stuck in a
+  loop shows everything it printed, up to the cap, within about 100 ms. Without isolation there is no tail: output
+  held back during a flood shows when the program next prints or yields, and is lost if the program is stopped first.
+  Capped at 1 MB ("Output limit reached" system line). `useCodeRunner` keeps the transcript
   in a ref, publishes it at most once per animation frame and merges the oldest segments past 5000. Errors carry
   line numbers mapped to the student's source.
 - `runTests`: for each test, non-interactive run with `inputLines(test.input)` as stdin, compare stdout with
@@ -130,7 +135,8 @@ Contract in `runtime/types.ts` + `runtime/index.ts` + `runtime/useCodeRunner.ts`
 ## 6. Pseudocode engine (shared/src/pseudocode)
 
 One engine, configured by `PseudocodeConfig`. Public API in `index.ts`: `checkPseudocode`, `runPseudocode`,
-presets (`PSEUDOCODE_PRESETS`, `createPseudocodeConfig`, `normalizePseudocodeConfig`, `validatePseudocodeConfig`),
+presets (`PSEUDOCODE_PRESETS`, `createPseudocodeConfig`, `normalizePseudocodeConfig`, `validatePseudocodeConfig`,
+`COMMENT_PREFIXES`),
 word bank helpers (`buildVocabulary`, `buildBuiltinVocabulary`, `highlightWords`, `renderExample`, `starterProgram`).
 
 Language (Classroom wording; every keyword is the teacher's choice of spelling, case-insensitive unless configured):
@@ -160,8 +166,12 @@ CONSTANT PI ← 3.14  /  CONSTANT PI = 3.14                plain assignment (AQA
 
 Connector keywords (SET, TO, FROM, STEP, TIMES, DO, THEN, CALL, IN) are still names where a name is clearly meant —
 before an assignment symbol, in a parameter or INPUT/DECLARE name list, or right after SET/FOR/FOR EACH/INPUT/DECLARE/
-FUNCTION/PROCEDURE — and then also as values (`step ← 2 … FOR i FROM 1 TO 9 STEP step`), so words an exam board never
-uses stay free for names. Every other keyword spelling is reserved.
+FUNCTION/PROCEDURE (`FOR EACH from IN list`) — and then also as values (`step ← 2 … FOR i FROM 1 TO 9 STEP step`), so
+words an exam board never uses stay free for names. After an IF / WHILE whose THEN / DO is left out, such a name may
+start the block (`then[1] ← 2`, `do(i)`). DECLARE and CONSTANT (added later) are keywords only at the start of an
+instruction followed by a name (`CONSTANT PI ← 3.14`, `DECLARE x : INTEGER`); everywhere else, and in
+`constant ← 9.81`, `declare[1] ← 2` or `declare(5)`, they are ordinary names, so older programs keep working. Every
+other keyword spelling is reserved.
 
 `blockStyle: 'braces'` replaces `END X` with `{ … }` after a header (AP CSP: `IF (x > 3) { … } ELSE { … }`,
 `REPEAT 3 TIMES { … }`, `PROCEDURE p(a) { … }`); `'both'` accepts either.
@@ -169,7 +179,9 @@ uses stay free for names. Every other keyword spelling is reserved.
 Semantics: `=`/`≠` compare a number with text that looks like that number as equal (`"1" = 1`, so `INPUT choice` …
 `choice = "1"` works although numeric-looking input becomes a number); items inside lists compare strictly, and
 `< > <= >=` between a number and text are an error whose hint says to drop the quote marks. Text functions, `[ ]` and
-FOR EACH count an emoji as one character. `/` true division, `DIV`/`MOD` floor-based (Python-like); division by zero is an error; numbers print
+FOR EACH count an emoji as one character (a per-run `TextIndex` in `values.ts` remembers the characters of the last few
+texts and works out the length of joined text, so `FOR i … s[i]` loops and text built up a character at a time stay
+linear). `/` true division, `DIV`/`MOD` floor-based (Python-like); division by zero is an error; numbers print
 without trailing `.0` and with float noise removed (`0.1 + 0.2` → `0.3`); booleans print as the teacher's TRUE/FALSE
 spelling; lists print as `[1, 2, 3]` (strings inside lists quoted). Functions/procedures are hoisted; lookups go
 local → global; assignment updates an existing local, else an existing global, else creates a local.
@@ -180,10 +192,16 @@ grows too long and lists nested too deeply to print are reported at the statemen
 **Constructs switched off ("not learned yet")** are still recognised, so students get
 `You haven't learned "WHILE" yet.` instead of a confusing parse error. Built-ins can be renamed or switched off.
 
-`validatePseudocodeConfig` also rejects comment symbols that would swallow code written without spaces (`!` starts
-`!=`; `--`, `*-`, `(-` appear in `5--2`, `x*-1`, `(-1)`; `normalizePseudocodeConfig` drops them from stored configs) and
-two spellings of one keyword where one starts with the other (`PRINT` and `PRINT LINE` would read `PRINT line` as one
-word). Keyword slots added later (`declare`, `constant`) are optional in the schema and filled with their defaults.
+Comment symbols come from a fixed list, `COMMENT_PREFIXES`: `//` `#` `--` `%` `;`. The lexer looks for comments before
+operators, so other symbols could swallow code written without spaces (`!` starts `!=`, `((` starts `((1 + 2) * 3)`,
+`*(` is in `2*(1+2)`), and `'` starts text. With `--`, `5--2` is `5` and a comment (write `5 - -2`); with `;`, a
+semicolon no longer separates two instructions. `validatePseudocodeConfig` rejects any other symbol and
+`normalizePseudocodeConfig` drops it from stored configs (falling back to `//` when none is left). Validation also
+rejects two spellings of one keyword where one starts with the other and the extra word could be a name (`PRINT` and
+`PRINT LINE` would read `PRINT line` as one word) or a keyword that could follow the shorter one (`IF` / `IF NOT` would
+drop the NOT; `END` / `END LOOP` when LOOP closes a WHILE); harmless pairs are allowed (`END` / `END IF`, and `REPEAT` /
+`REPEAT UNTIL` or `ELSE` / `ELSE IF`, which the parser reads like the two words). Keyword slots added later (`declare`,
+`constant`) are optional in the schema and filled with their defaults.
 
 Error messages are for 11–16 year olds: say what's wrong, where (line/column), and a hint
 (`Did you mean "OUTPUT"?` via edit distance against known words and variables). Examples:
@@ -333,10 +351,15 @@ CALL, MOD/DIV, LENGTH, `&` concatenation),
 - `WordBank`: constructs from `buildVocabulary` (learned first; locked greyed with a lock icon and "Not learned
   yet"), keyword chips, rendered examples, built-ins table.
 - `WebPreview`: `iframe sandbox="allow-scripts allow-modals"` with `srcDoc` + injected console capture via
-  `postMessage` (unique channel id; ignore other messages). `webPreviewDocument.ts` places the capture script first in
-  `<head>` (ignoring comments and script/style/title text; before any earlier `<script>`), and `loopProtect.ts` adds
-  a time-budget guard to every `while`/`do…while`/`for(;;)` condition in inline scripts: loops that keep the page busy
-  for over 1 s throw "The loop on line N ran for more than 1 second…" into the page console.
+  `postMessage` (unique channel id; ignore other messages). `webPreviewDocument.ts` scans the page with a small HTML
+  tokenizer (comments, attribute values and raw text such as script/style/title/noscript/iframe content are not
+  markup) and places the capture script first in `<head>`, before any earlier `<script>`. `loopProtect.ts` adds a
+  time-budget guard `(typeof __ccLoop!=='function'||__ccLoop(line))` to every `while`/`do…while`/`for(;;)` condition
+  in inline scripts (not to script text in attribute values such as `srcdoc`, `on…=` handlers or `for…in/of`; a script
+  its tokenizer can't read, i.e. half-typed code, is left as is): loops that keep the page busy for over 1 s throw "The
+  loop on line N ran for more than 1 second…" into the page console. Only the time spent inside
+  alert/confirm/prompt/print is taken off the budget, so a prompt loop works but one whose dialogs return at once
+  is still stopped.
 
 ## 8. Security notes
 - Sessions: random 32-byte token in an httpOnly SameSite=Lax cookie; only its SHA-256 is stored. Passwords: scrypt.
@@ -347,8 +370,9 @@ CALL, MOD/DIV, LENGTH, `&` concatenation),
   reads `document.cookie` on every request and retries once on that 403. Student code runs in Web Workers on our origin
   (also when a teacher autogrades or previews it): its requests carry the cookies, but workers can't read them.
 - The runner worker script is served with its own CSP (`server/src/app.ts` for `/assets/worker-*.js`, a Vite plugin in
-  dev): `default-src 'none'`, scripts from self + the Pyodide CDN (with eval/wasm), `connect-src` only the Pyodide CDN
-  and `<origin>/assets/` (`'self'` in dev), so student code can't reach `/api` in production.
+  dev): `default-src 'none'`, scripts from self + the Pyodide CDN (with eval/wasm), `connect-src 'self'` + the Pyodide
+  CDN (no other hosts, so nothing can be sent elsewhere), `worker-src`/`child-src 'none'` (no nested workers). The
+  policy is a constant (no request headers go into it). Same-origin `/api` calls from a worker fail the token check.
 - Students never receive hidden tests or other students' data. Teachers only manage their own classes (admins all).
 - Student code runs only in browsers: Web Workers (no DOM, network APIs replaced, terminated on stop/timeout and
   JavaScript workers after every run; see §5) and a sandboxed iframe without

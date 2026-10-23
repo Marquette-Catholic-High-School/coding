@@ -41,7 +41,7 @@ function directives(csp: string | null): Record<string, string[]> {
 }
 
 describe('runner worker CSP', () => {
-  it('limits the worker to the Pyodide CDN and /assets/', async () => {
+  it('limits the worker to its own origin and the Pyodide CDN, with no nested workers', async () => {
     const res = await fetch(`${origin}/assets/worker-mDjuYiji.js`);
     expect(res.status).toBe(200);
     const csp = directives(res.headers.get('content-security-policy'));
@@ -49,19 +49,19 @@ describe('runner worker CSP', () => {
     expect(csp['script-src']).toEqual(
       expect.arrayContaining(["'self'", "'unsafe-eval'", "'wasm-unsafe-eval'", 'https://cdn.jsdelivr.net']),
     );
-    expect(csp['connect-src']).toEqual(['https://cdn.jsdelivr.net', `${origin}/assets/`]);
+    expect(csp['connect-src']).toEqual(["'self'", 'https://cdn.jsdelivr.net']);
+    expect(csp['worker-src']).toEqual(["'none'"]);
+    expect(csp['child-src']).toEqual(["'none'"]);
     // Cross-origin isolation still applies to the worker.
     expect(res.headers.get('cross-origin-embedder-policy')).toBe('require-corp');
   });
 
-  it('uses the forwarded host and protocol from a local reverse proxy', async () => {
-    const res = await fetch(`${origin}/assets/worker-mDjuYiji.js`, {
-      headers: { 'X-Forwarded-Host': 'codeclass.school.example', 'X-Forwarded-Proto': 'https' },
+  it('ignores forwarded headers (nothing request-controlled goes into the policy)', async () => {
+    const plain = (await fetch(`${origin}/assets/worker-mDjuYiji.js`)).headers.get('content-security-policy');
+    const forwarded = await fetch(`${origin}/assets/worker-mDjuYiji.js`, {
+      headers: { 'X-Forwarded-Host': 'evil.example', 'X-Forwarded-Proto': "* http; connect-src *" },
     });
-    expect(directives(res.headers.get('content-security-policy'))['connect-src']).toEqual([
-      'https://cdn.jsdelivr.net',
-      'https://codeclass.school.example/assets/',
-    ]);
+    expect(forwarded.headers.get('content-security-policy')).toBe(plain);
   });
 
   it('leaves other files and the page alone', async () => {

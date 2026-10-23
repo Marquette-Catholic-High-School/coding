@@ -5,10 +5,11 @@
 
 import type { LanguageKind, TestCase, TestResult } from '@codeclass/shared';
 import { createInputChannel, writeInputEof, writeInputLine } from './channel';
-import { acknowledgeOutput, createOutputTail, readOutputTail, resetOutputTail } from './outputTail';
+import { createOutputTail, OutputTailReader, resetOutputTail } from './outputTail';
 import {
   DEFAULT_TEST_TIMEOUT_MS,
   MAX_OUTPUT_CHARS,
+  OUTPUT_TAIL_POLL_MS,
   TIMEOUT_MESSAGE,
   type InputMode,
   type MainToWorker,
@@ -48,7 +49,7 @@ interface WorkerSlot {
   /** Terminated: never handed out again. */
   dead: boolean;
   channel: SharedArrayBuffer | null;
-  /** Output the worker has not sent yet (see outputTail.ts); null without cross-origin isolation. */
+  /** Mirror of the output the page has not received yet (see outputTail.ts); null without cross-origin isolation. */
   tail: SharedArrayBuffer | null;
   /** Receives the worker's messages while a run owns the slot. */
   listener: ((message: WorkerToMain) => void) | null;
@@ -199,8 +200,9 @@ class RunSession {
   private resolve!: (outcome: RunOutcome) => void;
   private settled = false;
   private stdout = '';
-  /** The last output batch received (the worker's output tail holds the ones after it). */
-  private receivedBatch = 0;
+  /** Reads the worker's output tail (output it could not send yet); null without cross-origin isolation. */
+  private tail: OutputTailReader | null = null;
+  private tailTimer: ReturnType<typeof setInterval> | null = null;
   private waitingForInput = false;
   /** Lines typed ahead of the program's requests; null is the end of input. */
   private readonly queuedInput: (string | null)[] = [];
@@ -243,6 +245,8 @@ class RunSession {
       slot.listener = (message) => this.onMessage(message);
       slot.onCrash = (reason) => {
         this.slot = null;
+        // What the program printed before the crash may not have arrived yet.
+        this.showTail();
         this.finish('error', { message: `The code runner stopped unexpectedly (${reason}).` });
       };
       if (this.inputMode === 'channel') slot.channel ??= createInputChannel();
@@ -250,6 +254,7 @@ class RunSession {
         slot.tail ??= createOutputTail();
         // The slot is idle, so the worker is not writing to its tail now.
         resetOutputTail(slot.tail);
+        this.tail = new OutputTailReader(slot.tail);
       }
       const request: MainToWorker = {
         type: 'run',
@@ -276,9 +281,7 @@ class RunSession {
         call(this.options.onPhase, message.phase);
         break;
       case 'output':
-        this.receivedBatch = message.batch;
-        if (this.slot?.tail) acknowledgeOutput(this.slot.tail, message.batch);
-        this.emit(message.chunks);
+        this.emit(this.tail ? this.tail.receive(message.batch, message.chunks) : message.chunks);
         break;
       case 'input-request': {
         this.pauseClock();
@@ -364,6 +367,12 @@ class RunSession {
       const remaining = Math.max(0, this.timeoutMs - this.elapsedMs);
       this.timer = setTimeout(() => this.finish('timeout', { message: TIMEOUT_MESSAGE }), remaining);
     }
+    // Output the worker held back while the program stays busy (it sends everything before waiting for input).
+    if (this.tail) this.tailTimer = setInterval(() => this.showTail(), OUTPUT_TAIL_POLL_MS);
+  }
+
+  private showTail(): void {
+    if (!this.settled && this.tail) this.emit(this.tail.read());
   }
 
   private pauseClock(): void {
@@ -374,6 +383,10 @@ class RunSession {
     if (this.timer !== null) {
       clearTimeout(this.timer);
       this.timer = null;
+    }
+    if (this.tailTimer !== null) {
+      clearInterval(this.tailTimer);
+      this.tailTimer = null;
     }
   }
 
@@ -386,8 +399,8 @@ class RunSession {
     this.slot = null;
     if (slot) {
       // Still running (stop, timeout, startup failure): the worker may be stuck, so it is replaced. Output it could
-      // not send (a program that never yields) is still in its tail.
-      if (slot.tail) this.emit(readOutputTail(slot.tail, this.receivedBatch));
+      // not send (a program that never yields) or that has not arrived yet is still in its tail.
+      if (this.tail) this.emit(this.tail.read());
       if (slot.channel) writeInputEof(slot.channel);
       discard(slot);
     }

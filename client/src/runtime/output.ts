@@ -4,8 +4,8 @@
 // Language runtimes often run synchronously and never yield to the event loop, so a batching timer may never fire.
 // Writes are therefore sent straight away until `burst` messages went out within one interval; only a flood of
 // output is held back, and it goes out with the next write after the interval (or from the timer, for code that
-// yields). Output that is held back is also mirrored into the output tail, which the main thread reads if it has
-// to stop a program that never yields again.
+// yields). Every write is also mirrored into the output tail (outputTail.ts), which the page reads while a program
+// is busy and when it stops one, so output held back by a program that never yields again still shows.
 
 import { MAX_OUTPUT_CHARS, OUTPUT_BURST, OUTPUT_FLUSH_MS, OUTPUT_LIMIT_MESSAGE } from './protocol';
 import type { OutputTailSink } from './outputTail';
@@ -14,7 +14,7 @@ import type { OutputChunk, OutputStream } from './types';
 export interface OutputBufferOptions {
   /** Posts one batch; `batch` counts the batches from 1. */
   send: (chunks: OutputChunk[], batch: number) => void;
-  /** Mirror of the output that has not been sent yet (see outputTail.ts). */
+  /** Mirror of the output the page has not received yet (see outputTail.ts). */
   tail?: OutputTailSink | null;
   intervalMs?: number;
   /** Batches sent straight away within one interval before writes are held back. */
@@ -111,7 +111,6 @@ export class OutputBuffer {
     const batch = this.batch++;
     this.sentInWindow++;
     this.send(chunks, batch);
-    this.tail?.sent(batch);
   }
 
   private append(stream: OutputStream, text: string): void {

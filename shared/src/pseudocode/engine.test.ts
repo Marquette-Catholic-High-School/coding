@@ -8,6 +8,7 @@ import {
   type PseudoRunOptions,
   type PseudocodeConfig,
 } from './index';
+import { TextIndex } from './values';
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Helpers
@@ -403,13 +404,20 @@ describe('operators and values', () => {
   });
 
   it('uses the configured comment prefixes', () => {
-    const cfg = config({ commentPrefixes: ['#', '%%'] });
-    expect(output(lines('# heading', 'OUTPUT 1 %% trailing', 'OUTPUT 5 - 2'), cfg)).toBe('1\n3\n');
+    const cfg = config({ commentPrefixes: ['#', '%'] });
+    expect(output(lines('# heading', 'OUTPUT 1 % trailing', 'OUTPUT 5 - 2'), cfg)).toBe('1\n3\n');
+    expect(output(lines('; heading', 'OUTPUT 1 ; trailing', 'OUTPUT 2'), config({ commentPrefixes: [';'] }))).toBe('1\n2\n');
   });
 
-  it('ignores stored comment symbols that would swallow operators (! in !=, -- in 5--3)', () => {
-    expect(output(lines('OUTPUT 5 != 3', 'OUTPUT 5--3', '# note'), config({ commentPrefixes: ['!', '--', '#'] }))).toBe('TRUE\n8\n');
+  it('keeps -- comments working (subtracting a negative number then needs a space)', () => {
+    const cfg = config({ commentPrefixes: ['#', '--'] });
+    expect(output(lines('-- heading', 'OUTPUT 1 -- note', 'OUTPUT 5 - -3', 'OUTPUT 5--3', 'OUTPUT 2 # note'), cfg)).toBe('1\n8\n5\n2\n');
+  });
+
+  it('ignores stored comment symbols that are not allowed (! would swallow !=)', () => {
+    expect(output(lines('OUTPUT 5 != 3', 'OUTPUT 5--3', '# note'), config({ commentPrefixes: ['!', '#'] }))).toBe('TRUE\n8\n');
     expect(output('OUTPUT 5 != 3 // note', config({ commentPrefixes: ['!'] }))).toBe('TRUE\n');
+    expect(output('OUTPUT [[1, 2], [3]], ((1 + 2) * 3), 2*(1+2) // note', config({ commentPrefixes: ['[[', '((', '*('] }))).toBe('[[1, 2], [3]] 9 6\n');
   });
 });
 
@@ -510,6 +518,15 @@ describe('keywords, aliases and case', () => {
   it('matches multi-word keywords greedily over any run of spaces or tabs', () => {
     const cfg = withKeywords({ output: ['SHOW ME'], endWhile: ['STOP LOOPING'] });
     expect(output(lines('n ← 0', 'WHILE n < 2', '  SHOW   ME n', '  n ← n + 1', 'STOP\tLOOPING'), cfg)).toBe('0\n1\n');
+  });
+
+  it('reads a longer spelling that ends in IF / UNTIL like the two words (ELSE / ELSE IF, REPEAT / REPEAT UNTIL)', () => {
+    const repeat = withKeywords({ repeat: ['REPEAT', 'REPEAT UNTIL'] });
+    expect(output(lines('n ← 0', 'REPEAT UNTIL n = 3', '  n ← n + 1', 'END REPEAT', 'REPEAT', '  n ← n - 1', 'UNTIL n = 0', 'OUTPUT n'), repeat)).toBe('0\n');
+    const otherwise = withKeywords({ else: ['OTHERWISE', 'OTHERWISE IF'], elseIf: ['ELSEIF'] });
+    const src = lines('FOR EACH x IN [1, 2, 3]', '  IF x = 1 THEN', '    OUTPUT "one"', '  OTHERWISE IF x = 2 THEN', '    OUTPUT "two"', '  OTHERWISE', '    OUTPUT "many"', '  END IF', 'END FOR');
+    expect(output(src, otherwise)).toBe('one\ntwo\nmany\n');
+    expect(output(lines('IF FALSE THEN', '  OUTPUT 1', 'END', 'IF TRUE THEN', '  OUTPUT 2', 'END IF'), withKeywords({ endIf: ['END IF', 'END'] }))).toBe('2\n');
   });
 
   it('lets students use the first word of a multi-word keyword as a variable', () => {
@@ -704,6 +721,60 @@ describe('built-in functions', () => {
     expect(output('FOR EACH c IN "hi😀"\n  OUTPUT c\nEND FOR')).toBe('h\ni\n😀\n');
     expect(failure('OUTPUT "😀"[2]').message).toBe("Position 2 doesn't exist — the text has 1 character (position 1).");
     expect(failure('OUTPUT SUBSTRING("😀", 3, 1)').message).toBe("SUBSTRING can't start at position 3 — the text has 1 character (positions 1 to 1).");
+    const built = lines('s ← ""', 'FOR i FROM 1 TO 40', '  s ← s & "😀" & i', 'END FOR', 'OUTPUT LENGTH(s), s[3], s[4], s[LENGTH(s)], SUBSTRING(s, 2, 3)');
+    expect(output(built)).toBe('111 😀 2 0 1😀2\n');
+  });
+
+  it('keeps the remembered characters of joined text right (shared lists, emoji split across a join)', () => {
+    const index = new TextIndex();
+    const check = (text: string) => {
+      const expected = Array.from(text);
+      const view = index.view(text);
+      expect(view.length).toBe(expected.length);
+      expect(index.length(text)).toBe(expected.length);
+      expect(Array.from({ length: view.length }, (_, n) => view.chars[n])).toEqual(expected);
+    };
+    const base = '😀'.repeat(20);
+    check(base);
+    const one = index.join(base, 'a😀');
+    const other = index.join(base, 'b'); // `base`'s list already grew for `one`, so this one gets its own
+    check(one);
+    check(other);
+    check(base);
+    const high = `${'x'.repeat(40)}\uD83D`;
+    check(high);
+    check(index.join(high, '\uDE00!')); // the two halves of 😀 meet in the middle: one character
+    let built = '';
+    for (let n = 0; n < 50; n++) {
+      built = index.join(built, n % 3 === 0 ? '😀' : 'é');
+      expect(index.length(built)).toBe(n + 1);
+    }
+    check(built);
+  });
+
+  it('indexes long text (also text with emoji) in time proportional to its length', () => {
+    for (const first of ['a', '€', '中', '😀']) {
+      const scan = lines(
+        `s ← "${first}bcdefgh"`,
+        'REPEAT 13 TIMES',
+        '  s ← s & s',
+        'END REPEAT',
+        'count ← 0',
+        'FOR i FROM 1 TO LENGTH(s)',
+        '  IF s[i] = "b" THEN',
+        '    count ← count + 1',
+        '  END IF',
+        'END FOR',
+        'OUTPUT count, LENGTH(s)',
+      );
+      const build = lines('t ← ""', 'WHILE LENGTH(t) < 65536 DO', `  t ← t & "${first}"`, '  last ← t[LENGTH(t)]', 'END WHILE', 'OUTPUT LENGTH(t), last');
+      const started = Date.now();
+      expect(output(scan)).toBe('8192 65536\n');
+      expect(output(build)).toBe(`65536 ${first}\n`);
+      // Re-reading the text for every s[i] took 2 s (€) to 18 s (emoji) here; reading it once takes a few ms.
+      // Generous bound: a quadratic implementation takes many seconds here, a linear one a few hundred ms.
+      expect(Date.now() - started).toBeLessThan(5000);
+    }
   });
 
   it('gives RANDOM inclusive whole numbers using options.random', () => {
@@ -853,6 +924,27 @@ describe('declarations, constants and parameters', () => {
     expect(output('DECLARE n : INTEGER\nCONSTANT k = 3\nOUTPUT k', old)).toBe('3\n');
   });
 
+  it('keeps "declare" and "constant" free as names everywhere except at the start of a DECLARE / CONSTANT line', () => {
+    // Programs saved before DECLARE and CONSTANT existed (every preset is case-insensitive).
+    expect(output(lines('constant ← 9.81', 'Constant ← 2', 'declare ← 1', 'OUTPUT constant * Constant + declare'))).toBe('20.62\n');
+    expect(output(lines('SET constant TO 3', 'FOR declare FROM 1 TO 2', '  OUTPUT declare * constant', 'END FOR declare'))).toBe('3\n6\n');
+    expect(output(lines('PROCEDURE p(constant, declare)', '  OUTPUT constant + declare', 'END PROCEDURE', 'p(1, 2)', 'CALL p(3, 4)'))).toBe('3\n7\n');
+    expect(output(lines('FUNCTION constant(x)', '  RETURN x * 2', 'END FUNCTION', 'OUTPUT constant(4)'))).toBe('8\n');
+    expect(output(lines('declare ← [1, 2]', 'declare[1] ← 9', 'FOR EACH constant IN declare', '  OUTPUT constant', 'END FOR'))).toBe('9\n2\n');
+    expect(output(lines('INPUT constant, declare', 'OUTPUT constant + declare'), CLASSROOM, ['5', '6'])).toBe('11\n');
+    expect(output(lines('constant ← TRUE', 'IF constant THEN', '  OUTPUT "yes"', 'END IF'))).toBe('yes\n');
+    expect(output('constant ← 3\nOUTPUT constant', aqa)).toBe('3\n');
+    expect(output('constant = 3\nOUTPUT constant', config({ assignOperators: ['='] }))).toBe('3\n');
+    expect(output(lines('PROCEDURE P(BYREF constant : INTEGER)', '  constant ← 5', 'ENDPROCEDURE', 'X ← 1', 'CALL P(X)', 'OUTPUT X'), cambridge)).toBe('5\n');
+    expect(checkPseudocode('constant ← 1\nconstant', CLASSROOM)[0]!.message).toBe('This line uses "constant" but doesn\'t do anything with it.');
+    // …while the keywords still work, also with names that are connector words or the other keyword.
+    expect(output(lines('CONSTANT to ← 5', 'DECLARE from : INTEGER', 'DECLARE constant : STRING', 'CONSTANT declare = 2', 'OUTPUT to, declare'), cambridge)).toBe('52\n');
+    expect(output('IF TRUE THEN CONSTANT X ← 1 END IF\nOUTPUT X')).toBe('1\n');
+    expect(output('CONSTANT X ← 3\nconstant ← X\nOUTPUT constant', config({ caseSensitive: true }))).toBe('3\n');
+    expect(checkPseudocode('x ← 1 CONSTANT y ← 2', cambridge)[0]).toMatchObject({ message: 'I wasn\'t expecting "CONSTANT" here.', hint: 'Start a new line for each instruction.' });
+    expect(checkPseudocode('CONSTANT X ← 1', withConstructs({ variables: false }))[0]!.message).toBe('You haven\'t learned "CONSTANT" yet.');
+  });
+
   it('copies BYREF parameters back to the caller (until BYVAL), and tolerates BYVAL', () => {
     const swap = lines(
       'PROCEDURE Swap(BYREF X : INTEGER, Y : INTEGER)',
@@ -952,6 +1044,21 @@ describe('connector words as names', () => {
     expect(syntax('to = 5').message).toBe('To store a value in a variable, write to ← …');
     // Variables are case-sensitive, so TO is still the keyword when only "to" is a variable.
     expect(syntax('to ← 1\nOUTPUT TO').message).toBe('I expected a value after "OUTPUT", but found "TO".');
+  });
+
+  it('accepts FOR EACH with a loop variable named after a connector word', () => {
+    for (const name of ['from', 'to', 'step', 'set', 'call', 'times', 'do', 'then', 'in']) {
+      expect(output(lines(`FOR EACH ${name} IN [1, 2]`, `  OUTPUT ${name}`, 'END FOR'))).toBe('1\n2\n');
+      expect(output(lines(`FOR ${name} FROM 1 TO 2`, `  OUTPUT ${name}`, 'END FOR'))).toBe('1\n2\n');
+    }
+    expect(output(lines('FOR EACH from IN [1, 2]', '{', '  DISPLAY(from)', '}'), apCsp)).toBe('1 2 ');
+  });
+
+  it('starts the block with a connector-named variable when THEN / DO is left out', () => {
+    expect(output(lines('then ← [0]', 'IF TRUE', '  then[1] ← 2', 'END IF', 'OUTPUT then'))).toBe('[2]\n');
+    expect(output(lines('PROCEDURE do(x)', '  OUTPUT x', 'END PROCEDURE', 'i ← 0', 'WHILE i < 1', '  do(i)', '  i ← i + 1', 'END WHILE'))).toBe('0\n');
+    expect(output(lines('then ← [0]', 'IF TRUE', '  THEN', '    then[1] ← 2', 'ENDIF', 'OUTPUT then'), cambridge)).toBe('[2]\n');
+    expect(output(lines('IF TRUE', '  THEN', '    OUTPUT "a"', 'ENDIF'), cambridge)).toBe('a\n');
   });
 
   it('explains a counting loop whose variable is called "each"', () => {

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { languagePickerEnterSubmits, validateClassLanguages } from './classForm';
+import { firstLanguageMatch, languagePickerEnterSubmits, validateClassLanguages } from './classForm';
 
 describe('validateClassLanguages', () => {
   it('requires at least one language', () => {
@@ -25,5 +25,28 @@ describe('languagePickerEnterSubmits', () => {
   it('lets Enter submit the form once the user has finished choosing', () => {
     expect(languagePickerEnterSubmits(false, '')).toBe(true);
     expect(languagePickerEnterSubmits(false, '   ')).toBe(true);
+  });
+});
+
+describe('firstLanguageMatch', () => {
+  const options = [
+    { value: 'javascript', label: 'JavaScript' },
+    { value: 'python', label: 'Python' },
+    { value: 'pseudo', label: 'Classroom Pseudocode' },
+  ];
+
+  it('adds the first unpicked language containing the filter, ignoring case and spaces', () => {
+    expect(firstLanguageMatch(options, [], ' PYTH ')).toBe('python');
+    expect(firstLanguageMatch(options, [], 'script')).toBe('javascript');
+    expect(firstLanguageMatch(options, ['javascript'], 'script')).toBeNull();
+  });
+
+  it('adds nothing without a filter (a second Enter after a pick must not add the next language)', () => {
+    expect(firstLanguageMatch(options, ['python'], '')).toBeNull();
+    expect(firstLanguageMatch(options, [], '  ')).toBeNull();
+  });
+
+  it('adds nothing when nothing matches', () => {
+    expect(firstLanguageMatch(options, [], 'rust')).toBeNull();
   });
 });

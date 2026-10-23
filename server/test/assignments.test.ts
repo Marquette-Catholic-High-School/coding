@@ -171,6 +171,25 @@ describe('update and delete', () => {
     expect((await teacher.patch(`/assignments/${ungraded.assignment.id}`, { points: 5 })).status).toBe(200);
   });
 
+  it("ignores grades of students who left the class, and suggests whole points", async () => {
+    const leaver = insertUser('student');
+    const stayer = insertUser('student');
+    const cls = insertClass(insertUser('teacher').id, ['js'], [leaver.id, stayer.id]);
+    const owner = clientAs(srv.base, (db.prepare('SELECT owner_id FROM classes WHERE id = ?').pluck().get(cls) as number));
+    const created = await owner.post<AssignmentResponse>(`/classes/${cls}/assignments`, input({ points: 100 }));
+    const id = created.body.assignment.id;
+    for (const [s, grade] of [[leaver, 95], [stayer, 40.5]] as const) {
+      expect((await clientAs(srv.base, s.id).post(`/assignments/${id}/submit`, { code: 'x' })).status).toBe(200);
+      expect((await owner.patch(`/assignments/${id}/submissions/${s.id}`, { grade })).status).toBe(200);
+    }
+    db.prepare('DELETE FROM enrollments WHERE class_id = ? AND user_id = ?').run(cls, leaver.id);
+
+    const tooLow = await owner.patch(`/assignments/${id}`, { points: 40 });
+    expect(tooLow.status).toBe(400);
+    expect(tooLow.body.error.fieldErrors.points).toMatch(/keep at least 41 points/);
+    expect((await owner.patch(`/assignments/${id}`, { points: 41 })).status).toBe(200);
+  });
+
   it('rejects switching to a kind without tests while tests remain', async () => {
     const { assignment } = await create();
     const res = await teacher.patch(`/assignments/${assignment.id}`, { languageId: 'web' });

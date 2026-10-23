@@ -30,6 +30,12 @@ const ARROWS: ReadonlySet<string> = new Set(['←', '<-', ':=']);
  * word is used as a name instead. This keeps words an exam board never uses (SET, FROM, CALL …) free for names.
  */
 const CONNECTORS: ReadonlySet<PseudoKeyword> = new Set<PseudoKeyword>(['set', 'to', 'from', 'step', 'times', 'do', 'then', 'call', 'in']);
+/**
+ * DECLARE and CONSTANT (added after programs were first saved) are keywords only at the start of an instruction, where a
+ * name follows (`CONSTANT PI ← 3.14`, `DECLARE x : INTEGER`). Everywhere else, and in `constant ← 9.81`, `declare[1] ← 2`
+ * or `declare(5)`, they are ordinary names, so programs that already used these words as names keep working.
+ */
+const CONTEXTUAL: ReadonlySet<PseudoKeyword> = new Set<PseudoKeyword>(['declare', 'constant']);
 /** Keywords followed by the name of a variable they give a value to (for hints and for connector names). */
 const NAMING_SLOTS: ReadonlySet<PseudoKeyword> = new Set<PseudoKeyword>(['set', 'for', 'forEach', 'input', 'declare', 'constant']);
 /** Cambridge parameter passing words: `PROCEDURE Swap(BYREF a : INTEGER, b : INTEGER)` (BYREF lasts until BYVAL). */
@@ -157,9 +163,10 @@ class Parser {
       const connector = this.connectorNameAt(n, lineStart);
       if (connector === 'variable') this.assigned.add(tok.text);
       else if (connector === 'function') this.functionNames.add(tok.text);
-      if (tok.kind === 'word') {
+      if (tok.kind === 'word' || this.isContextualName(tok)) {
         if (next?.kind === 'op' && (ARROWS.has(next.text) || next.text === '=')) this.assigned.add(tok.text);
-      } else if (tok.kind === 'kw' && next?.kind === 'word') {
+      }
+      if (tok.kind === 'kw' && next !== undefined && (next.kind === 'word' || this.isContextualName(next))) {
         if (NAMING_SLOTS.has(tok.slot!)) this.assigned.add(next.text);
         if (tok.slot === 'function' || tok.slot === 'procedure') this.functionNames.add(next.text);
       }
@@ -177,7 +184,7 @@ class Parser {
       if (p.kind === 'op' && (p.text === '(' || p.text === '[')) depth++;
       else if (p.kind === 'op' && (p.text === ')' || p.text === ']')) {
         if (--depth <= 0) break;
-      } else if (p.kind === 'word' && depth === 1 && !PASSING.test(p.text)) {
+      } else if ((p.kind === 'word' || this.isContextualName(p)) && depth === 1 && !PASSING.test(p.text)) {
         let prev = t[j - 1]!;
         if (prev.kind === 'word' && PASSING.test(prev.text)) prev = t[j - 2]!;
         if (prev.kind === 'op' && (prev.text === '(' || prev.text === ',')) this.assigned.add(p.text);
@@ -228,8 +235,18 @@ class Parser {
     return t.kind === 'kw' && CONNECTORS.has(t.slot!) && (this.assigned.has(t.text) || this.functionNames.has(t.text));
   }
 
+  /** DECLARE or CONSTANT (one word) as a name: anywhere but the start of an instruction (see CONTEXTUAL). */
+  private isContextualName(t: Token): boolean {
+    return t.kind === 'kw' && CONTEXTUAL.has(t.slot!) && !t.text.includes(' ');
+  }
+
+  /** A keyword token that this program uses as a name. */
+  private isNameKeyword(t: Token): boolean {
+    return this.isConnectorName(t) || this.isContextualName(t);
+  }
+
   private isName(t: Token): boolean {
-    return t.kind === 'word' || this.isConnectorName(t);
+    return t.kind === 'word' || this.isNameKeyword(t);
   }
 
   /** Current token; a 'bad' token (lexer problem) is reported as soon as the parser reaches it. */
@@ -467,11 +484,36 @@ class Parser {
     throw this.fail(t, `I wasn't expecting ${describe(t)} here.`, hint);
   }
 
-  /** THEN / DO are optional and may sit on the next line (Cambridge puts THEN on its own line). */
+  /**
+   * THEN / DO are optional and may sit on the next line (Cambridge puts THEN on its own line). When the program also
+   * uses the word as a name, `then ← 1`, `then[1] ← 2` and `do(i)` start the block's first instruction instead.
+   */
   private optionalConnector(slot: 'then' | 'do'): void {
     const j = this.afterNewlines();
     const t = this.toks[j]!;
-    if (this.isKw(t, slot) && !(this.isConnectorName(t) && this.isAssignOp(this.toks[j + 1]!))) this.i = j + 1;
+    if (!this.isKw(t, slot)) return;
+    const after = this.toks[j + 1]!;
+    if (this.isConnectorName(t) && (this.isAssignOp(after) || this.isOp(after, '[') || this.isOp(after, '('))) return;
+    this.i = j + 1;
+  }
+
+  /**
+   * Whether a keyword typed as one longer spelling ends in a spelling of `slot`: `REPEAT UNTIL` when the teacher listed
+   * both REPEAT and REPEAT UNTIL for REPEAT, or `ELSE IF` listed for ELSE. The parser reads those like the two words.
+   */
+  private endsWithKeyword(t: Token, slot: PseudoKeyword): boolean {
+    const words = t.text.split(' ');
+    if (t.kind !== 'kw' || words.length < 2) return false;
+    const norm = this.lang.norm;
+    const spells = (s: PseudoKeyword, part: string[]) =>
+      this.lang.config.keywords[s].some((spelling) => {
+        const w = spelling.split(' ');
+        return w.length === part.length && w.every((x, n) => norm(x) === norm(part[n]!));
+      });
+    for (let cut = 1; cut < words.length; cut++) {
+      if (spells(t.slot!, words.slice(0, cut)) && spells(slot, words.slice(cut))) return true;
+    }
+    return false;
   }
 
   /** "at the start of a line", or "here" when something comes before the token on its line. */
@@ -511,8 +553,12 @@ class Parser {
 
   private keywordStatement(t: Token): A.Stmt | A.Stmt[] | null {
     const after = this.at(1);
-    if (t.slot === 'forEach') this.eachAsLoopVariable(t, after);
-    if (this.isConnectorName(t) && (this.isAssignOp(after) || this.isOp(after, '=') || this.isOp(after, '[') || this.isOp(after, '('))) {
+    if (t.slot === 'forEach') this.eachAsLoopVariable(t, after, this.at(2));
+    if (this.isNameKeyword(t) && (this.isAssignOp(after) || this.isOp(after, '=') || this.isOp(after, '[') || this.isOp(after, '('))) {
+      return this.wordStatement(t);
+    }
+    // `constant` alone on a line in a program that uses it as a variable: say so, rather than asking for a name.
+    if (this.isContextualName(t) && !this.isName(after) && (this.assigned.has(t.text) || this.functionNames.has(t.text))) {
       return this.wordStatement(t);
     }
     if (this.isAssignOp(after) || this.isOp(after, '=')) throw this.reservedName(t);
@@ -670,7 +716,7 @@ class Parser {
 
   private parseTarget(): A.Target {
     const t = this.peek();
-    if (t.kind === 'kw' && !this.isConnectorName(t)) throw this.reservedName(t);
+    if (t.kind === 'kw' && !this.isNameKeyword(t)) throw this.reservedName(t);
     if (!this.isName(t)) throw this.fail(t, `I expected a variable name here, but found ${describe(t)}.`);
     this.next();
     let target: A.Target = { k: 'var', ...posOf(t), name: t.text };
@@ -722,11 +768,12 @@ class Parser {
       const j = first.braces ? this.afterNewlines() : this.i;
       const t = this.toks[j]!;
       const after = this.toks[j + 1]!;
-      const elseIf = this.isKw(t, 'elseIf') || (this.isKw(t, 'else') && this.isKw(after, 'if') && after.line === t.line);
+      const joined = this.isKw(t, 'else') && this.endsWithKeyword(t, 'if');
+      const elseIf = this.isKw(t, 'elseIf') || joined || (this.isKw(t, 'else') && this.isKw(after, 'if') && after.line === t.line);
       if (!elseIf && !this.isKw(t, 'else')) break;
       this.i = j;
       const word = this.next();
-      if (elseIf && word.slot === 'else') this.next();
+      if (elseIf && word.slot === 'else' && !joined) this.next();
       this.requireConstruct('else', word, elseIf ? k.elseIf : k.else);
       if (elseIf) {
         const c = this.parseExpr();
@@ -777,10 +824,11 @@ class Parser {
     const t = this.next();
     const k = this.k;
     const next = this.peek();
-    if (this.isKw(next, 'until')) {
+    const joined = this.endsWithKeyword(t, 'until');
+    if (joined || this.isKw(next, 'until')) {
       // REPEAT UNTIL cond … END REPEAT: checks before each pass (AP CSP).
       this.requireConstruct('repeatUntil', t, `${k.repeat} ${k.until}`);
-      this.next();
+      if (!joined) this.next();
       const cond = this.parseExpr();
       const block = this.openBlock(t, k.repeat, ['endRepeat'], k.endRepeat, `${k.repeat} ${k.until} (count = 5)`);
       const body = this.parseBody(block);
@@ -870,10 +918,14 @@ class Parser {
     return this.finishForEach(t, name);
   }
 
-  /** `FOR each FROM 1 TO 3`: "FOR each" was read as FOR EACH, so the counting loop has lost its variable. */
-  private eachAsLoopVariable(t: Token, next: Token): void {
+  /**
+   * `FOR each FROM 1 TO 3`: "FOR each" was read as FOR EACH, so the counting loop has lost its variable. (Not
+   * `FOR EACH from IN list`, where FROM is the name of the loop variable.)
+   */
+  private eachAsLoopVariable(t: Token, next: Token, afterNext: Token): void {
     const words = t.text.split(' ');
-    const counting = this.isKw(next, 'from') || (next.kind === 'op' && (ARROWS.has(next.text) || next.text === '='));
+    const counting =
+      (this.isKw(next, 'from') && !this.isKw(afterNext, 'in')) || (next.kind === 'op' && (ARROWS.has(next.text) || next.text === '='));
     if (words.length < 2 || !counting) return;
     throw this.fail(
       t,
@@ -1413,7 +1465,7 @@ class Parser {
         this.next();
         return { k: 'str', ...posOf(t), value: t.value as string };
       case 'kw':
-        if (!this.isConnectorName(t)) return this.keywordValue(t);
+        if (!this.isNameKeyword(t)) return this.keywordValue(t);
         return this.nameValue(t);
       case 'word':
         return this.nameValue(t);

@@ -125,17 +125,18 @@ describe('OutputBuffer without a chance to yield', () => {
     expect(batches).toEqual([1, 2, 3, 4]);
   });
 
-  it('mirrors held-back output into the tail and reports each batch it sends', () => {
+  it('mirrors every write into the tail with the batch it goes out in', () => {
     const events: string[] = [];
     const tail: OutputTailSink = {
       record: (batch, stream, text) => events.push(`record ${batch} ${stream} ${JSON.stringify(text)}`),
-      sent: (batch) => events.push(`sent ${batch}`),
     };
-    const { buffer } = setup({ burst: 1, tail });
+    const { buffer, batches } = setup({ burst: 1, tail });
     buffer.write('stdout', 'a\n');
     buffer.write('stderr', 'b\n');
+    buffer.write('stderr', 'c\n');
     buffer.flush();
-    expect(events).toEqual(['record 1 stdout "a\\n"', 'sent 1', 'record 2 stderr "b\\n"', 'sent 2']);
+    expect(events).toEqual(['record 1 stdout "a\\n"', 'record 2 stderr "b\\n"', 'record 2 stderr "c\\n"']);
+    expect(batches).toEqual([1, 2]);
   });
 
   it('forgets the prompt once a typed answer was taken', () => {

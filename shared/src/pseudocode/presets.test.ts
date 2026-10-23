@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   BUILTIN_INFO,
+  COMMENT_PREFIXES,
   DEFAULT_PRESET_ID,
   KEYWORD_INFO,
   PSEUDOCODE_PRESETS,
@@ -293,13 +294,10 @@ describe('validatePseudocodeConfig', () => {
     ]);
     expect(validatePseudocodeConfig(edit((c) => (c.assignOperators = [])))).toEqual([]);
     expect(validatePseudocodeConfig(edit((c) => (c.commentPrefixes = ['REM'])))).toEqual([
-      'Comment symbol "REM" can\'t contain letters or digits.',
-    ]);
-    expect(validatePseudocodeConfig(edit((c) => (c.commentPrefixes = ['/'])))).toEqual([
-      '"/" can\'t start comments because it\'s already an operator.',
+      '"REM" can\'t start comments — choose from //, #, --, % or ;.',
     ]);
     expect(validatePseudocodeConfig(edit((c) => (c.commentPrefixes = [])))).toEqual(['Add at least one comment symbol, such as //.']);
-    expect(validatePseudocodeConfig(edit((c) => (c.commentPrefixes = ['#', '%%', '!!', '/*'])))).toEqual([]);
+    expect(validatePseudocodeConfig(edit((c) => (c.commentPrefixes = ['#', '//', '--', '%'])))).toEqual([]);
     expect(validatePseudocodeConfig(edit((c) => (c.constructs.output = false)))).toEqual([
       'Output must stay switched on — students need it to see what their program does.',
     ]);
@@ -311,21 +309,26 @@ describe('validatePseudocodeConfig', () => {
     ]);
   });
 
-  it('rejects comment symbols that would swallow operators written without spaces', () => {
+  it('only accepts comment symbols from a list that cannot swallow code written without spaces', () => {
     const problems = (prefix: string) => validatePseudocodeConfig(edit((c) => (c.commentPrefixes = [prefix])));
-    expect(problems('!')).toEqual(['"!" can\'t start comments because the "!=" operator starts with it.']);
-    expect(problems('--')).toEqual(['"--" can\'t start comments because code like 5--2 uses those symbols.']);
-    expect(problems('*-')).toEqual(['"*-" can\'t start comments because code like 5*-2 uses those symbols.']);
-    expect(problems('=+')).toEqual(['"=+" can\'t start comments because code like 5=+2 uses those symbols.']);
-    expect(problems('(-')).toEqual(['"(-" can\'t start comments because code like (-2) uses those symbols.']);
-    expect(problems('[-')).toEqual(['"[-" can\'t start comments because code like [-2] uses those symbols.']);
-    expect(problems(',-')).toEqual(['",-" can\'t start comments because code like (1,-2) uses those symbols.']);
-    expect(problems('--->')).toHaveLength(1);
-    expect(problems('//')).toEqual([]);
-    expect(problems('->')).toEqual([]);
-    // Stored configs are repaired the same way, so the operators keep working.
-    expect(normalizePseudocodeConfig({ commentPrefixes: ['!', '--', '#'] }).commentPrefixes).toEqual(['#']);
+    for (const ok of COMMENT_PREFIXES) expect(problems(ok)).toEqual([]);
+    expect(COMMENT_PREFIXES).toEqual(['//', '#', '--', '%', ';']);
+    // ! starts !=, [[ and (( start nested brackets, *( and =( appear in 2*(1+2) and x=(1), :- in ARRAY[-2:-1], ' starts text.
+    for (const bad of ['!', '[[', '((', '*(', '=(', ':-', '*-', '(-', "'", '/', '%%', '->', '/*', '<!--', ' ']) {
+      expect(problems(bad)).toHaveLength(1);
+    }
+    expect(problems('!')).toEqual(['"!" can\'t start comments — choose from //, #, --, % or ;.']);
+    expect(problems(' ')).toEqual(["Comment symbols can't be empty."]);
+    expect(problems(' # ')).toEqual([]);
+  });
+
+  it('keeps every allowed comment symbol of a stored language, and replaces only symbols that are not allowed', () => {
+    expect(normalizePseudocodeConfig({ commentPrefixes: ['//', '#', '--', '%', ';'] }).commentPrefixes).toEqual(['//', '#', '--', '%']);
+    expect(normalizePseudocodeConfig({ commentPrefixes: ['--'] }).commentPrefixes).toEqual(['--']);
+    expect(normalizePseudocodeConfig({ commentPrefixes: ['#', '--'] }).commentPrefixes).toEqual(['#', '--']);
+    expect(normalizePseudocodeConfig({ commentPrefixes: ['!', '--', '#'] }).commentPrefixes).toEqual(['--', '#']);
     expect(normalizePseudocodeConfig({ commentPrefixes: ['!'] }).commentPrefixes).toEqual(['//']);
+    expect(normalizePseudocodeConfig({ commentPrefixes: ['[[', '((', ' ; '] }).commentPrefixes).toEqual([';']);
   });
 
   it('rejects a spelling that starts with another spelling of the same keyword', () => {
@@ -336,12 +339,33 @@ describe('validatePseudocodeConfig', () => {
       '"end if more" and "END IF" are both spellings of "End if", so END IF followed by a name called more would be read as end if more. Keep just one of them.',
     ]);
     expect(validatePseudocodeConfig(edit((c) => (c.keywords.output = ['PRINT', 'PRINTLINE', 'SHOW ME'])))).toEqual([]);
+    // A connector word, DECLARE or CONSTANT can be a name, so it can't extend a spelling either.
+    expect(validatePseudocodeConfig(edit((c) => (c.keywords.endFor = ['END FOR', 'END FOR to'])))).toHaveLength(1);
+    expect(validatePseudocodeConfig(edit((c) => (c.keywords.output = ['SHOW', 'SHOW constant'])))).toHaveLength(1);
     expect(validatePseudocodeConfig(edit((c) => {
       c.caseSensitive = true;
       c.keywords.output = ['Print', 'PRINT LINE'];
     }))).toEqual([]);
     // Different keywords may share a first word (FOR and FOR EACH, ELSE and ELSE IF).
     expect(validatePseudocodeConfig(createPseudocodeConfig('classroom'))).toEqual([]);
+  });
+
+  it('accepts a longer spelling whose extra word is a keyword that could not follow the shorter one', () => {
+    expect(validatePseudocodeConfig(edit((c) => (c.keywords.endIf = ['END IF', 'END'])))).toEqual([]);
+    expect(validatePseudocodeConfig(edit((c) => (c.keywords.repeat = ['REPEAT', 'REPEAT UNTIL'])))).toEqual([]);
+    expect(validatePseudocodeConfig(edit((c) => {
+      c.keywords.else = ['OTHERWISE', 'OTHERWISE IF'];
+      c.keywords.elseIf = ['ELSEIF'];
+    }))).toEqual([]);
+    // …but not one that changes what working code means: IF NOT x, ELSE OUTPUT x, END IF END WHILE.
+    expect(validatePseudocodeConfig(edit((c) => (c.keywords.if = ['IF', 'IF NOT'])))).toEqual([
+      '"IF NOT" and "IF" are both spellings of "If", so IF followed by NOT would be read as IF NOT. Keep just one of them.',
+    ]);
+    expect(validatePseudocodeConfig(edit((c) => (c.keywords.else = ['ELSE', 'ELSE OUTPUT'])))).toHaveLength(1);
+    expect(validatePseudocodeConfig(edit((c) => {
+      c.keywords.endIf = ['END', 'END LOOP'];
+      c.keywords.endWhile = ['LOOP'];
+    }))).toHaveLength(1);
   });
 
   it('reports several problems at once and never throws on garbage', () => {
