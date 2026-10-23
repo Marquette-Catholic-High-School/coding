@@ -83,7 +83,9 @@ done
 
 [[ $EUID -eq 0 ]] || die "run this as root, e.g. sudo codeclass-update"
 [[ -f "$CONF_DIR/install.conf" ]] || die "CodeClass doesn't look installed ($CONF_DIR/install.conf is missing). Run deploy/install.sh first."
-exec 9>/run/codeclass-update.lock
+# The lock lives in a root-only folder, so no other account can open (and hold) it.
+install -d -o root -g root -m 0700 /run/codeclass
+exec 9>/run/codeclass/update.lock
 flock -n 9 || die "another codeclass-update is already running"
 
 # install.conf is root-owned and written by install.sh with printf %q.
@@ -182,16 +184,20 @@ prune_releases() {
   find "$RELEASES" -mindepth 1 -maxdepth 1 -name '.build-*' -mmin +60 -exec rm -rf {} + 2>/dev/null || true
 }
 
-# Installs made by the first published scripts let the codeclass user own /opt/codeclass and its releases. Make the
-# code root-owned again: keep only the running release (frozen read-only, its .git removed) and drop the others.
+# Installs made by the first published scripts let the codeclass user own /opt/codeclass and its releases. A release
+# built by them has no saved unit template (or still has its .git). Make the code root-owned again: keep only the
+# running release (frozen read-only, its .git removed) and drop the other old ones.
 migrate_layout() {
   local cur dir name
   cur="$(current_release)"
   install -d -o root -g root -m 0755 "$APP_HOME" "$RELEASES"
+  install -d -o root -g root -m 0700 "$UNIT_DIR"
   for dir in "$RELEASES"/*/; do
     [[ -d "$dir" ]] || continue
     name="$(basename "$dir")"
-    [[ -n "$(find "$dir" ! -user root -print -quit 2>/dev/null)" ]] || continue
+    if [[ ! -e "$dir/.git" && -f "$UNIT_DIR/$name.service" && -z "$(find "$dir" ! -user root -print -quit 2>/dev/null)" ]]; then
+      continue
+    fi
     if [[ "$name" == "$cur" ]]; then
       chown -R root:root "$dir"
       chmod -R go-w "$dir"
@@ -203,8 +209,6 @@ migrate_layout() {
     fi
   done
   rm -rf "$APP_HOME/.npm" "$APP_HOME/.cache"
-  install -d -o root -g root -m 0700 "$UNIT_DIR"
-  if [[ "$(getent passwd "$APP_USER" | cut -d: -f6)" == "$APP_HOME" ]]; then usermod -d "$DATA_DIR" "$APP_USER" || true; fi
 }
 
 # --- health -------------------------------------------------------------------------------------------------------
@@ -285,7 +289,7 @@ prune_backups() {
   while read -r old; do
     [[ -z "$old" || "$BACKUP_DIR/$old" == "$BACKUP" ]] && continue
     rm -f "${BACKUP_DIR:?}/$old" "$BACKUP_DIR/$old-wal"
-  done < <(find "$BACKUP_DIR" -maxdepth 1 -type f -name 'codeclass-*.db' -printf '%f\n' 2>/dev/null | sort | head -n "-$KEEP_BACKUPS")
+  done < <({ find "$BACKUP_DIR" -maxdepth 1 -type f -name 'codeclass-*.db' -printf '%f\n' 2>/dev/null || true; } | sort | head -n "-$KEEP_BACKUPS")
 }
 
 # --- switching releases -------------------------------------------------------------------------------------------
@@ -295,9 +299,12 @@ activate() {
   local target="$1" previous="$2" discard="$3"
   step "Switching to $target"
   check_space
-  # A dropped SSH session or Ctrl-C must not stop the script half-way through the switch.
-  trap '' HUP INT TERM
+  # A dropped SSH session (also when output goes through a pipe such as tee) or Ctrl-C must not stop the script
+  # half-way through the switch.
+  trap '' HUP INT TERM PIPE
   systemctl stop "$SERVICE" 2>/dev/null || true
+  # The codeclass user's home was /opt/codeclass with the first published scripts; usermod needs the service stopped.
+  if [[ "$(getent passwd "$APP_USER" | cut -d: -f6)" == "$APP_HOME" ]]; then usermod -d "$DATA_DIR" "$APP_USER" 2>/dev/null || true; fi
   if ! backup_db "$(release_sha "${previous:-$target}")"; then
     [[ -n "$previous" ]] && { systemctl start "$SERVICE" || true; }
     die "couldn't back up the database, so nothing was changed${previous:+ ($previous is running again)}"
@@ -305,7 +312,7 @@ activate() {
   if set_link current "$target" && render_unit "$target" && systemctl start "$SERVICE" && healthy; then
     if [[ -n "$previous" ]]; then set_link previous "$previous"; fi
     systemctl enable --quiet "$SERVICE"
-    trap - HUP INT TERM
+    trap - HUP INT TERM PIPE
     ok "$target is running"
     return 0
   fi
@@ -322,13 +329,13 @@ activate() {
   if [[ -z "$previous" ]]; then
     rm -f "$APP_HOME/current"
     systemctl disable --quiet "$SERVICE" 2>/dev/null || true
-    trap - HUP INT TERM
+    trap - HUP INT TERM PIPE
     die "CodeClass didn't start (see the log above). Fix the problem and run the installer again, or remove it with: sudo codeclass-uninstall"
   fi
   if ! { set_link current "$previous" && render_unit "$previous" && systemctl start "$SERVICE"; }; then
     warn "couldn't switch back to $previous cleanly"
   fi
-  trap - HUP INT TERM
+  trap - HUP INT TERM PIPE
   if healthy; then die "$target didn't start properly, so $previous is running again (see the log above)"; fi
   die "$target didn't start AND $previous didn't come back; check: journalctl -u $SERVICE"
 }
@@ -372,6 +379,10 @@ sqlite_ok() {
 build_release() {
   BUILD_WORK="$(mktemp -d)"
   "${GIT[@]}" clone --quiet --depth 1 --branch "$BRANCH" "$SOURCE" "$BUILD_WORK/src"
+  grep -q '^# DEPLOY_API=2' "$BUILD_WORK/src/deploy/update.sh" 2>/dev/null ||
+    die "branch $BRANCH has deploy scripts older than this updater; choose a newer branch"
+  [[ -f "$BUILD_WORK/src/deploy/codeclass.service" && -f "$BUILD_WORK/src/deploy/uninstall.sh" ]] ||
+    die "branch $BRANCH has no complete deploy/ folder"
   local sha
   sha="$(git -C "$BUILD_WORK/src" rev-parse --short=10 HEAD)"
   NEW="$(date -u +%Y%m%d-%H%M%S)-$sha"
@@ -389,9 +400,9 @@ build_release() {
   # Freeze the build: root-owned and read-only from here on.
   chown -R root:root "$BUILD_STAGE"
   chmod -R go-w "$BUILD_STAGE"
+  install -m 0600 -o root -g root "$BUILD_WORK/src/deploy/codeclass.service" "$UNIT_DIR/$NEW.service"
   mv -T "$BUILD_STAGE" "$RELEASES/$NEW"
   BUILD_STAGE=""
-  install -m 0600 -o root -g root "$BUILD_WORK/src/deploy/codeclass.service" "$UNIT_DIR/$NEW.service"
   rm -rf "$BUILD_HOME"
   BUILD_HOME=""
   ok "built $NEW"
@@ -412,7 +423,6 @@ save_branch() {
   info "now following branch $BRANCH"
 }
 
-migrate_layout
 CURRENT="$(current_release)"
 
 # --- rollback -----------------------------------------------------------------------------------------------------
@@ -421,6 +431,9 @@ if [[ $ROLLBACK -eq 1 ]]; then
   PREVIOUS="$(previous_release)"
   [[ -n "$PREVIOUS" ]] || die "there is no older release to go back to"
   confirm "Go back from $CURRENT to $PREVIOUS?" || die "cancelled"
+  migrate_layout
+  PREVIOUS="$(previous_release)"
+  [[ -n "$PREVIOUS" ]] || die "no older release is left (releases built by older scripts were removed)"
   activate "$PREVIOUS" "$CURRENT" 0
   step "${G}Rolled back to $PREVIOUS${N}"
   info "The database was not changed (a backup from just now is in $BACKUP_DIR)."
@@ -455,12 +468,13 @@ else
 fi
 
 # --- build next to the running release, then switch ---------------------------------------------------------------
+migrate_layout
 step "Building CodeClass${CURRENT:+ (the site stays up meanwhile)}"
 trap 'die "build failed on line $LINENO, so nothing was changed${CURRENT:+ and the site still runs $CURRENT}"' ERR
 trap 'die "interrupted; nothing was changed"' HUP INT TERM
 build_release
 trap 'die "failed on line $LINENO (exit $?)"' ERR
-trap - HUP INT TERM
+trap - HUP INT TERM PIPE
 
 activate "$NEW" "$CURRENT" 1
 install_commands

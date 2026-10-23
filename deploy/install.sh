@@ -193,6 +193,25 @@ apt_update
 "${APT[@]}" install ca-certificates curl gnupg git build-essential python3 >/dev/null
 ok "base packages"
 
+# --- source (fetched before changing Node.js or Caddy, so a wrong repository or branch changes nothing else) ------
+step "Downloading CodeClass"
+WORK="$(mktemp -d)"
+STAGED_SITE=""
+STAGED_MAIN=""
+VALIDATE_MAIN=""
+cleanup() {
+  rm -rf "$WORK"
+  rm -f "$STAGED_SITE" "$STAGED_MAIN" "$VALIDATE_MAIN"
+}
+trap cleanup EXIT
+"${GIT[@]}" clone --quiet --depth 1 --branch "$BRANCH" "$SOURCE" "$WORK/src" || die "could not clone $REPO ($BRANCH)"
+for file in install.sh update.sh uninstall.sh codeclass.service; do
+  [[ -f "$WORK/src/deploy/$file" ]] || die "$REPO ($BRANCH) has no deploy/$file"
+done
+grep -q '^# DEPLOY_API=2' "$WORK/src/deploy/update.sh" ||
+  die "branch $BRANCH has deploy scripts older than this installer; install a newer branch or use the installer from that branch"
+ok "commit $(git -C "$WORK/src" rev-parse --short=10 HEAD)"
+
 node_major() { "$1" -p 'process.versions.node.split(".")[0]' 2>/dev/null || echo 0; }
 
 # Prefer the system Node.js in /usr/bin (what NodeSource installs); another `node` earlier in PATH may be older.
@@ -254,32 +273,14 @@ if ! id -u "$APP_USER" >/dev/null 2>&1; then
   useradd --system --home-dir "$DATA_DIR" --no-create-home --shell /usr/sbin/nologin --user-group "$APP_USER"
 fi
 # Code is root-owned and read-only for the app; only its data folder is writable by it. Backups are root-only.
+# (Releases built by older scripts are migrated by codeclass-update.)
 install -d -o root -g root -m 0755 "$APP_HOME" "$APP_HOME/releases"
-find "$APP_HOME/releases" -mindepth 1 -maxdepth 1 -user "$APP_USER" -exec chown -R root:root {} + 2>/dev/null || true
 install -d -o "$APP_USER" -g "$APP_USER" -m 0750 "$DATA_DIR"
 install -d -o root -g root -m 0700 "$BACKUP_DIR"
 install -d -o root -g "$APP_USER" -m 0750 "$CONF_DIR"
 ok "$APP_HOME (code), $DATA_DIR (database), $BACKUP_DIR (backups), $CONF_DIR (settings)"
 
-# --- source and settings ------------------------------------------------------------------------------------------
-step "Downloading CodeClass"
-WORK="$(mktemp -d)"
-STAGED_SITE=""
-STAGED_MAIN=""
-VALIDATE_MAIN=""
-cleanup() {
-  rm -rf "$WORK"
-  rm -f "$STAGED_SITE" "$STAGED_MAIN" "$VALIDATE_MAIN"
-}
-trap cleanup EXIT
-"${GIT[@]}" clone --quiet --depth 1 --branch "$BRANCH" "$SOURCE" "$WORK/src" || die "could not clone $REPO ($BRANCH)"
-for file in install.sh update.sh uninstall.sh codeclass.service; do
-  [[ -f "$WORK/src/deploy/$file" ]] || die "$REPO ($BRANCH) has no deploy/$file"
-done
-grep -q '^# DEPLOY_API=2' "$WORK/src/deploy/update.sh" ||
-  die "branch $BRANCH has deploy scripts older than this installer; install a newer branch or use the installer from that branch"
-ok "commit $(git -C "$WORK/src" rev-parse --short=10 HEAD)"
-
+# --- web server configuration and settings ---------------------------------------------------------------------
 REPLACE_STOCK=0
 if [[ "$MODE" != none ]]; then
   step "Checking the Caddy configuration"
@@ -318,7 +319,7 @@ fi
 
 step "Writing settings"
 # From here on a dropped SSH session must not stop the installer half-way (output then simply goes nowhere).
-trap '' HUP
+trap '' HUP PIPE
 STAMP="$(date -u +%Y%m%d-%H%M%S)"
 # Keep copies to put back if the rebuild fails, so the running release isn't restarted with settings that don't match
 # the web server.
@@ -417,7 +418,13 @@ if [[ "$MODE" != none ]]; then
       if [[ -f "$WORK/$(basename "$live").live" ]]; then cp -p "$WORK/$(basename "$live").live" "$live"; else rm -f "$live"; fi
     done
     reload_caddy || true
-    die "Caddy couldn't load the new site, so its previous configuration was put back (check: caddy validate --config $CADDYFILE). CodeClass itself is running on 127.0.0.1:$PORT"
+    if [[ $HAS_RELEASE -eq 1 ]]; then
+      # Keep the app on the settings that match the web server it still has.
+      if [[ -n "$PREV_ENV" ]]; then cp -p "$PREV_ENV" "$ENV_FILE"; fi
+      if [[ -n "$PREV_CONF" ]]; then cp -p "$PREV_CONF" "$CONF_DIR/install.conf"; fi
+      systemctl try-restart codeclass || true
+    fi
+    die "Caddy couldn't load the new site, so its previous configuration was put back (check: caddy validate --config $CADDYFILE). Fix it and run the installer again with --force."
   fi
   systemctl enable --quiet caddy
   ok "Caddy serves ${DOMAIN:-port 80} → 127.0.0.1:$PORT"

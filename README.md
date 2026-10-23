@@ -110,6 +110,10 @@ version doesn't start, or doesn't stay up, the updater puts the previous version
 `--rollback` returns to the release that ran before the last switch (run it again to go forward). The newest 3 releases
 are kept. `--branch NAME` switches to another branch and remembers it.
 
+If your server was installed with the very first version of these scripts (commit `f8c2983`), upgrade it once by
+running `sudo ./deploy/install.sh --force` from a fresh clone instead of `codeclass-update`. That moves it to the
+current, root-owned layout. After that, `codeclass-update` works as described.
+
 ### Uninstalling
 
 ```bash

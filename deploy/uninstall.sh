@@ -59,7 +59,8 @@ if [[ ! -e "$CONF_DIR" && ! -e "$APP_HOME" && ! -e "/etc/systemd/system/$SERVICE
   ok "CodeClass is not installed; nothing to do"
   exit 0
 fi
-exec 9>/run/codeclass-update.lock
+install -d -o root -g root -m 0700 /run/codeclass
+exec 9>/run/codeclass/update.lock
 flock -n 9 || die "codeclass-update is running; wait for it to finish"
 
 DB="$(grep -E '^[[:space:]]*DATABASE_PATH=' "$ENV_FILE" 2>/dev/null | tail -n1 | cut -d= -f2- || true)"
@@ -78,7 +79,7 @@ if [[ $ASSUME_YES -eq 0 ]]; then
   fi
 fi
 
-trap '' HUP
+trap '' HUP PIPE
 step "Stopping the service"
 systemctl disable --now --quiet "$SERVICE" 2>/dev/null || true
 rm -f "/etc/systemd/system/$SERVICE.service"
