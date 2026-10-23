@@ -1,0 +1,19 @@
+html, body, #root { min-height: 100%; }
+
+body {
+  background: light-dark(var(--mantine-color-gray-0), var(--mantine-color-dark-8));
+}
+
+/* Semantic text colors with ≥ 4.5:1 contrast in both schemes (used for score/status text). */
+:root, [data-mantine-color-scheme='light'] {
+  --score-text-high: #08664a;
+  --score-text-good: #4a6b0a;
+  --score-text-fair: #8a5a00;
+  --score-text-low:  #b02525;
+}
+[data-mantine-color-scheme='dark'] {
+  --score-text-high: var(--mantine-color-teal-4);
+  --score-text-good: var(--mantine-color-lime-4);
+  --score-text-fair: var(--mantine-color-yellow-4);
+  --score-text-low:  var(--mantine-color-red-4);
+}
