@@ -71,9 +71,10 @@ Then open the site and create the admin account. The first person to visit sets 
 The installer:
 
 - installs Node.js 24 (from NodeSource) and the Caddy web server if they are missing, plus git and build tools;
-- creates a `codeclass` system user, builds the app into `/opt/codeclass/releases/…` and points
-  `/opt/codeclass/current` at it;
-- stores the database in `/var/lib/codeclass` and its settings in `/etc/codeclass/codeclass.env`;
+- creates a `codeclass` system user, builds the app as that user, then makes each release root-owned and read-only
+  in `/opt/codeclass/releases/…`, with `/opt/codeclass/current` pointing at the running one;
+- stores the database in `/var/lib/codeclass`, database backups in `/var/backups/codeclass` (root only) and the
+  settings in `/etc/codeclass/codeclass.env`;
 - runs the app as the hardened `codeclass` systemd service, listening only on `127.0.0.1:3000`;
 - has Caddy serve the site with a free, auto-renewing HTTPS certificate from Let's Encrypt. The domain must already
   point at the server, with ports 80 and 443 reachable. If `ufw` is active, those ports are opened.
@@ -90,6 +91,8 @@ Without HTTPS, browsers won't let programs pause for typed input. Programs then 
 box instead, and sign-in cookies travel unencrypted. Use `--domain` whenever you can.
 
 Other options are `--branch NAME`, `--repo URL`, `--port PORT` and `--yes` (no questions). See `install.sh --help`.
+To change the domain, port or mode later, run the installer again with `--force` and the new options. It keeps all data
+and reuses the earlier settings for anything you leave out.
 
 ### Updating
 
@@ -100,18 +103,20 @@ sudo codeclass-update --rollback # switch back to the previous release
 ```
 
 The new version builds while the old one keeps serving. The site is then offline for a few seconds while it switches
-over. Before switching, the database is copied to `/var/lib/codeclass/backups` (the newest 10 copies are kept). If the
-new version doesn't start properly, the updater puts the previous version and the database back by itself. The
-newest 3 releases are kept for rollbacks.
+over. Before switching, the database is copied to `/var/backups/codeclass` (the newest 10 copies are kept). If the new
+version doesn't start, or doesn't stay up, the updater puts the previous version and the database back by itself.
+`--rollback` returns to the release that ran before the last switch (run it again to go forward). The newest 3 releases
+are kept. `--branch NAME` switches to another branch and remembers it.
 
 ### Uninstalling
 
 ```bash
 sudo codeclass-uninstall          # removes the app and service; keeps the database, backups and settings
-sudo codeclass-uninstall --purge  # also deletes all data, the settings and the codeclass user
+sudo codeclass-uninstall --purge  # also deletes all data, backups, the settings and the codeclass user
 ```
 
-Node.js and Caddy are left installed, because other software may use them.
+Node.js and Caddy are left installed, because other software may use them. Installing again after an uninstall without
+`--purge` picks up the kept database and settings.
 
 ### Running it
 
@@ -120,8 +125,8 @@ Node.js and Caddy are left installed, because other software may use them.
 | Status / restart | `systemctl status codeclass` · `sudo systemctl restart codeclass` |
 | Logs | `journalctl -u codeclass -f` (web server: `journalctl -u caddy`) |
 | Settings | edit `/etc/codeclass/codeclass.env`, then restart |
-| Back up | copy `/var/lib/codeclass/codeclass.db` (and its `-wal` file, if present). Or use the copies the updater makes |
-| Restore a backup | `sudo systemctl stop codeclass`, copy the backup over `codeclass.db` (delete any `-wal`/`-shm` files), start again |
+| Back up | `sudo systemctl stop codeclass`, copy `/var/lib/codeclass/codeclass.db*` somewhere safe, then `sudo systemctl start codeclass`. Every update also leaves a copy in `/var/backups/codeclass` |
+| Restore a backup | see below |
 
 Settings in `codeclass.env`:
 
@@ -131,6 +136,16 @@ Settings in `codeclass.env`:
 | `HOST` | every interface | `127.0.0.1` behind the reverse proxy |
 | `DATABASE_PATH` | `data/codeclass.db` | SQLite database file |
 | `COOKIE_SECURE` | unset | `1` when the site is served over HTTPS |
+
+To restore a database backup (`X.db` is the backup file):
+
+```bash
+sudo systemctl stop codeclass
+sudo rm -f /var/lib/codeclass/codeclass.db-wal /var/lib/codeclass/codeclass.db-shm
+sudo install -o codeclass -g codeclass -m 0640 X.db /var/lib/codeclass/codeclass.db
+# only if the backup has one: sudo install -o codeclass -g codeclass -m 0640 X.db-wal /var/lib/codeclass/codeclass.db-wal
+sudo systemctl start codeclass
+```
 
 To run it by hand somewhere else, use `npm ci && npm run build && npm start`. Any reverse proxy you use must pass
 through the `Cross-Origin-Opener-Policy` and `Cross-Origin-Embedder-Policy` headers. Programs need them to pause for
