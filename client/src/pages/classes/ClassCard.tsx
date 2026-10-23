@@ -4,9 +4,8 @@ import { IconClipboardList, IconUser, IconUsers } from '@tabler/icons-react';
 import type { ReactNode } from 'react';
 import { Link } from 'react-router';
 import { useCurrentUser } from '../../auth/AuthProvider';
-import { CodeChip } from '../../components/badges';
+import { ArchivedBadge, CodeChip } from '../../components/badges';
 import classes from '../../components/cards.module.css';
-import { ArchivedBadge } from './classBadges';
 
 const plural = (n: number, word: string) => `${n} ${word}${n === 1 ? '' : 's'}`;
 

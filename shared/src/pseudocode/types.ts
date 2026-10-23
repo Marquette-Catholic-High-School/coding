@@ -41,7 +41,9 @@ export type PseudoKeyword =
   | 'mod'
   | 'div'
   | 'true'
-  | 'false';
+  | 'false'
+  | 'declare'
+  | 'constant';
 
 /** Language features a teacher can switch on/off ("learned" or "not learned yet"). */
 export type PseudoConstruct =
@@ -132,7 +134,7 @@ export interface KeywordInfo {
   description: string;
   /** Default spelling(s) in the "Classroom" preset. */
   defaults: string[];
-  /** Optional connector words (THEN, DO) may be omitted by students. */
+  /** Words students may leave out: connectors (THEN, DO, CALL) and declarations (DECLARE, CONSTANT). */
   optional?: boolean;
 }
 
@@ -172,6 +174,24 @@ export const KEYWORD_INFO: readonly KeywordInfo[] = [
   { id: 'false', construct: 'logic', label: 'False', description: 'The value false.', defaults: ['FALSE'] },
   { id: 'mod', construct: 'modDiv', label: 'Mod', description: 'Remainder after division: 7 MOD 2 is 1.', defaults: ['MOD'] },
   { id: 'div', construct: 'modDiv', label: 'Div', description: 'Whole-number division: 7 DIV 2 is 3.', defaults: ['DIV'] },
+  // Added after the original slots (stored configs without them get the defaults), so they come last: an older
+  // config that already uses DECLARE or CONSTANT for another slot keeps that meaning.
+  {
+    id: 'declare',
+    construct: 'variables',
+    label: 'Declare',
+    description: 'DECLARE x : INTEGER names a variable (optional). DECLARE marks : ARRAY[1:5] OF INTEGER makes a list of 5 zeros.',
+    defaults: ['DECLARE'],
+    optional: true,
+  },
+  {
+    id: 'constant',
+    construct: 'variables',
+    label: 'Constant',
+    description: 'CONSTANT PI ← 3.14 (or = 3.14) names a value that stays the same; it works like an assignment.',
+    defaults: ['CONSTANT'],
+    optional: true,
+  },
 ];
 
 export interface ConstructInfo {

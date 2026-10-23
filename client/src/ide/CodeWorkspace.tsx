@@ -15,7 +15,17 @@ import {
 } from '@mantine/core';
 import { useMediaQuery, type SplitterPaneSize } from '@mantine/hooks';
 import { inputLines, kindSupportsInput, kindSupportsTests, type TestResult } from '@codeclass/shared';
-import { IconAbc, IconChecklist, IconClearAll, IconFileText, IconLock, IconPlayerPlay, IconPlayerStop } from '@tabler/icons-react';
+import {
+  IconAbc,
+  IconBrowser,
+  IconChecklist,
+  IconClearAll,
+  IconFileText,
+  IconLock,
+  IconPlayerPlay,
+  IconPlayerStop,
+  IconRefresh,
+} from '@tabler/icons-react';
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { BADGE_NO_SHRINK, LanguageBadge } from '../components/badges';
 import { Markdown } from '../components/Markdown';
@@ -25,10 +35,12 @@ import { CodeEditor } from './CodeEditor';
 import { ConsolePanel } from './ConsolePanel';
 import { cssSize } from './editorTheme';
 import classes from './ide.module.css';
-import { loadingMessage, summarizeTests } from './ideUtils';
+import { loadingMessage, summarizeTests, testsBadgeColor } from './ideUtils';
 import { TestsPanel } from './TestsPanel';
 import type { CodeEditorHandle, CodeWorkspaceProps } from './types';
+import { useFitLevel } from './useFitLevel';
 import { WebPreview } from './WebPreview';
+import { pageHasScripts } from './webPreviewDocument';
 import { WordBank } from './WordBank';
 
 type SideTab = 'instructions' | 'tests' | 'words';
@@ -194,12 +206,23 @@ export function CodeWorkspace({
   const [previewHtml, setPreviewHtml] = useState(code);
   const [reloadKey, setReloadKey] = useState(0);
   const [webOutput, setWebOutput] = useState<OutputChunk[]>([]);
+  // Plain HTML/CSS updates as you type. A page with scripts only updates on Run, so half-typed code (say, a `while`
+  // loop whose body isn't written yet) never runs by itself; its inline scripts are loop-protected as well.
+  const runsScripts = useMemo(() => isWeb && pageHasScripts(code), [isWeb, code]);
+  // What was last typed in this editor; any other new `code` was loaded or replaced by the page and shows at once.
+  const typedCode = useRef<string | null>(null);
 
   useEffect(() => {
     if (!isWeb) return;
+    if (code !== typedCode.current) {
+      setPreviewHtml(code);
+      return;
+    }
+    if (runsScripts) return;
     const timer = window.setTimeout(() => setPreviewHtml(code), PREVIEW_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
-  }, [isWeb, code]);
+  }, [isWeb, code, runsScripts]);
+  const previewStale = runsScripts && previewHtml !== code;
 
   // Every reload runs the page again, so earlier console messages no longer apply.
   useEffect(() => {
@@ -232,11 +255,15 @@ export function CodeWorkspace({
     if (hasTestsTab) selectTab('tests');
     try {
       const results: TestResult[] = await runner.runTests(code, tests, compareMode);
-      onTestResults?.(results);
+      // Stopped part-way: the panel shows what ran, but incomplete results aren't reported to the page.
+      if (results.length === tests.length) onTestResults?.(results);
     } catch (err) {
       notifyError(err, "Couldn't run the tests");
     }
   };
+
+  // Stops the program or the test run, whichever is going.
+  const handleStop = () => runner.stop();
 
   const handleClear = () => {
     if (isWeb) {
@@ -249,6 +276,7 @@ export function CodeWorkspace({
 
   const handleChange = (value: string) => {
     setErrorLine(null);
+    typedCode.current = value;
     onCodeChange?.(value);
   };
 
@@ -256,46 +284,81 @@ export function CodeWorkspace({
 
   const outcome = runner.lastOutcome && runner.lastOutcome !== clearedOutcome && !runner.isRunning ? runner.lastOutcome : null;
   const consoleEmpty = isWeb ? webOutput.length === 0 : runner.output.length === 0 && outcome == null;
-  const testResults = runner.testResults ?? initialTestResults ?? null;
+  // This session's test run (even part-way), else the stored results — also when a run was stopped before any finished.
+  const testResults =
+    runner.testsRunning || (runner.testResults?.length ?? 0) > 0 ? runner.testResults : (initialTestResults ?? null);
   const testSummary = summarizeTests(tests, testResults);
 
   // ----- Pieces -----
+  // The toolbar stays on one line by dropping the shortcut hint (level 1), then showing Run tests as an icon
+  // (level 2); only at level 3 does it wrap.
+  const toolbarFit = useFitLevel<HTMLDivElement>(3);
+  const showKbdHint = toolbarFit.level === 0;
+  const toolbarWrap = toolbarFit.level < 3 ? 'nowrap' : 'wrap';
+  const canRunTests = tests.length > 0 && kindSupportsTests(kind);
+
   const toolbar = (
-    <Group justify="space-between" gap="sm" wrap="wrap" role="toolbar" aria-label="Code tools">
-      <Group gap="xs" wrap="wrap">
+    <Group
+      ref={toolbarFit.ref}
+      justify="space-between"
+      gap="sm"
+      wrap={toolbarWrap}
+      className={toolbarWrap === 'nowrap' ? classes.noShrink : undefined}
+      role="toolbar"
+      aria-label="Code tools"
+    >
+      <Group gap="xs" wrap={toolbarWrap}>
         <LanguageBadge kind={kind} name={language.name} />
         {!editable && (
           <Badge variant="light" color="gray" leftSection={<IconLock size={12} />} {...BADGE_NO_SHRINK}>
             Read-only
           </Badge>
         )}
-        {runner.isRunning ? (
-          <Button color="red" variant="light" leftSection={<IconPlayerStop size={18} />} onClick={() => runner.stop()}>
+        {busy ? (
+          <Button color="red" variant="light" leftSection={<IconPlayerStop size={18} />} onClick={handleStop}>
             Stop
           </Button>
         ) : (
-          <Button leftSection={<IconPlayerPlay size={18} />} onClick={handleRun} disabled={runner.testsRunning}>
-            Run
-          </Button>
+          <Tooltip label={`Run (${MOD_KEY} + Enter)`} disabled={showKbdHint}>
+            <Button leftSection={<IconPlayerPlay size={18} />} onClick={handleRun}>
+              Run
+            </Button>
+          </Tooltip>
         )}
-        <Group gap={4} wrap="nowrap" visibleFrom="md">
-          <Kbd size="xs">{MOD_KEY}</Kbd>
-          <Text size="xs" c="dimmed">
-            +
-          </Text>
-          <Kbd size="xs">Enter</Kbd>
-        </Group>
-        {tests.length > 0 && kindSupportsTests(kind) && (
-          <Button
-            variant="default"
-            leftSection={<IconChecklist size={18} />}
-            onClick={() => void handleRunTests()}
-            loading={runner.testsRunning}
-            disabled={runner.isRunning}
-          >
-            Run tests
-          </Button>
+        {showKbdHint && (
+          <Group gap={4} wrap="nowrap" visibleFrom="md">
+            <Kbd size="xs">{MOD_KEY}</Kbd>
+            <Text size="xs" c="dimmed">
+              +
+            </Text>
+            <Kbd size="xs">Enter</Kbd>
+          </Group>
         )}
+        {canRunTests &&
+          (toolbarFit.level >= 2 ? (
+            <Tooltip label="Run tests">
+              <ActionIcon
+                variant="default"
+                size="input-sm"
+                aria-label="Run tests"
+                onClick={() => void handleRunTests()}
+                loading={runner.testsRunning}
+                disabled={runner.isRunning}
+              >
+                <IconChecklist size={18} />
+              </ActionIcon>
+            </Tooltip>
+          ) : (
+            <Button
+              variant="default"
+              leftSection={<IconChecklist size={18} />}
+              onClick={() => void handleRunTests()}
+              loading={runner.testsRunning}
+              disabled={runner.isRunning}
+            >
+              Run tests
+            </Button>
+          ))}
         <Tooltip label="Clear console">
           <ActionIcon variant="subtle" color="gray" size="lg" aria-label="Clear console" onClick={handleClear} disabled={consoleEmpty || busy}>
             <IconClearAll size={18} />
@@ -303,7 +366,7 @@ export function CodeWorkspace({
         </Tooltip>
       </Group>
       {toolbarRight && (
-        <Group gap="sm" wrap="wrap">
+        <Group gap="sm" wrap={toolbarWrap}>
           {toolbarRight}
         </Group>
       )}
@@ -356,6 +419,7 @@ export function CodeWorkspace({
       phase={runner.phase}
       inputPrompt={runner.inputPrompt}
       onSubmitInput={(line) => runner.submitInput(line)}
+      onEndInput={() => runner.endInput()}
       outcome={outcome}
       loadingMessage={loadingMessage(kind)}
       onGoToLine={goToLine}
@@ -365,13 +429,49 @@ export function CodeWorkspace({
   );
 
   const preview = (
-    <Box className={classes.fill}>
-      <WebPreview html={previewHtml} reloadKey={reloadKey} onConsole={handleWebConsole} height="100%" />
+    <Box className={`${classes.column} ${classes.fill}`}>
+      <div className={classes.paneHeader}>
+        <Group gap={6} wrap="nowrap">
+          <IconBrowser size={16} aria-hidden />
+          <Text size="sm" fw={600}>
+            Page
+          </Text>
+        </Group>
+        {previewStale ? (
+          <Tooltip label={`Pages with scripts update when you press Run (${MOD_KEY} + Enter)`} multiline maw={260}>
+            <Button size="compact-xs" variant="light" leftSection={<IconRefresh size={14} />} onClick={handleRun}>
+              Show changes
+            </Button>
+          </Tooltip>
+        ) : (
+          <Text size="xs" c="dimmed" truncate style={{ minWidth: 0 }}>
+            {runsScripts ? 'Updates when you press Run' : 'Updates as you type'}
+          </Text>
+        )}
+      </div>
+      <Box className={classes.fill}>
+        <WebPreview html={previewHtml} reloadKey={reloadKey} onConsole={handleWebConsole} height="100%" />
+      </Box>
     </Box>
   );
 
   const panelStyle = isMobile ? undefined : { flex: 1, minHeight: 0 };
-  const testsBadgeColor = testSummary ? (testSummary.passed === testSummary.total ? 'teal' : 'red') : 'gray';
+  // Side tabs fit on one line by showing only their icons when the panel is narrow.
+  const tabsFit = useFitLevel<HTMLDivElement>(1);
+  const iconTabs = tabsFit.level > 0;
+  const sideTabButton = (value: SideTab, label: string, icon: ReactNode, right?: ReactNode, ariaLabel = label) => (
+    <Tooltip key={value} label={label} disabled={!iconTabs}>
+      <Tabs.Tab
+        value={value}
+        leftSection={icon}
+        rightSection={right}
+        aria-label={iconTabs ? ariaLabel : undefined}
+        px={iconTabs ? 'sm' : undefined}
+      >
+        {iconTabs ? null : label}
+      </Tabs.Tab>
+    </Tooltip>
+  );
   const sidePanel = hasSide ? (
     <Tabs
       value={sideTab}
@@ -380,32 +480,27 @@ export function CodeWorkspace({
       h={isMobile ? undefined : '100%'}
       style={isMobile ? undefined : { display: 'flex', flexDirection: 'column' }}
     >
-      <Tabs.List px="xs" style={{ flexShrink: 0 }}>
-        {hasInstructions && (
-          <Tabs.Tab value="instructions" leftSection={<IconFileText size={16} />}>
-            Instructions
-          </Tabs.Tab>
-        )}
-        {hasTestsTab && (
-          <Tabs.Tab
-            value="tests"
-            leftSection={<IconChecklist size={16} />}
-            rightSection={
-              tests.length > 0 ? (
-                <Badge size="xs" variant="light" circle color={testsBadgeColor}>
-                  {tests.length}
-                </Badge>
-              ) : undefined
-            }
-          >
-            Tests
-          </Tabs.Tab>
-        )}
-        {hasWords && (
-          <Tabs.Tab value="words" leftSection={<IconAbc size={16} />}>
-            Words
-          </Tabs.Tab>
-        )}
+      <Tabs.List
+        ref={tabsFit.ref}
+        px="xs"
+        grow={iconTabs}
+        className={iconTabs ? undefined : classes.noShrink}
+        style={{ flexShrink: 0, flexWrap: iconTabs ? undefined : 'nowrap' }}
+      >
+        {hasInstructions && sideTabButton('instructions', 'Instructions', <IconFileText size={16} />)}
+        {hasTestsTab &&
+          sideTabButton(
+            'tests',
+            'Tests',
+            <IconChecklist size={16} />,
+            tests.length > 0 ? (
+              <Badge size="xs" variant="light" circle color={testsBadgeColor(testSummary)}>
+                {tests.length}
+              </Badge>
+            ) : undefined,
+            tests.length > 0 ? `Tests (${tests.length})` : 'Tests',
+          )}
+        {hasWords && sideTabButton('words', 'Words', <IconAbc size={16} />)}
       </Tabs.List>
       {hasInstructions && (
         <Tabs.Panel value="instructions" style={panelStyle}>
@@ -425,6 +520,7 @@ export function CodeWorkspace({
               currentTestIndex={runner.currentTestIndex}
               canRun={!runner.isRunning}
               onRunTests={() => void handleRunTests()}
+              onStop={handleStop}
             />
           </ScrollPanel>
         </Tabs.Panel>

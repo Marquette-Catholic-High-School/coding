@@ -81,7 +81,13 @@ function ProjectEditor({ project, language }: { project: Project; language: Lang
               color="red"
               size="lg"
               aria-label="Delete project"
-              onClick={() => confirmDelete(project, () => navigate('/playground', { replace: true }))}
+              onClick={() =>
+                confirmDelete(project, () => {
+                  // Don't let the save-on-unmount try to write to the deleted project.
+                  autosave.cancel();
+                  navigate('/playground', { replace: true });
+                })
+              }
             >
               <IconTrash size={18} />
             </ActionIcon>

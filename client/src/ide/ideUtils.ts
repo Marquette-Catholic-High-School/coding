@@ -9,16 +9,72 @@ export function formatDuration(ms: number): string {
   return `${s < 10 ? s.toFixed(2) : s.toFixed(1)} s`;
 }
 
-/** Joins consecutive chunks of the same stream so the transcript renders as few spans as possible. */
-export function mergeChunks(output: readonly OutputChunk[]): OutputChunk[] {
-  const merged: OutputChunk[] = [];
-  for (const chunk of output) {
+/** A run of console output from one stream, keyed by the index of its first chunk (stable while output grows). */
+export interface ConsoleSegment extends OutputChunk {
+  key: number;
+}
+
+/**
+ * The last `max` segments of a transcript (consecutive chunks of one stream merged). Only looks at the end of
+ * `output`, so it stays cheap when a program prints thousands of alternating stdout/stderr lines. `hidden` is true
+ * when earlier output was left out.
+ */
+export function tailSegments(output: readonly OutputChunk[], max: number): { segments: ConsoleSegment[]; hidden: boolean } {
+  const runs: { stream: OutputChunk['stream']; parts: string[]; key: number }[] = [];
+  let i = output.length - 1;
+  for (; i >= 0; i--) {
+    const chunk = output[i]!;
     if (!chunk.text) continue;
-    const last = merged[merged.length - 1];
-    if (last && last.stream === chunk.stream) last.text += chunk.text;
-    else merged.push({ stream: chunk.stream, text: chunk.text });
+    const run = runs[runs.length - 1];
+    if (run && run.stream === chunk.stream) {
+      run.parts.push(chunk.text);
+      run.key = i;
+      continue;
+    }
+    if (runs.length === max) break;
+    runs.push({ stream: chunk.stream, parts: [chunk.text], key: i });
   }
-  return merged;
+  const segments = runs.reverse().map((r) => ({ stream: r.stream, text: r.parts.reverse().join(''), key: r.key }));
+  return { segments, hidden: i >= 0 };
+}
+
+/** What a key press in the console's input line does: Enter sends the line, Ctrl+D (as in a terminal) ends input. */
+export function consoleInputKey(e: {
+  key: string;
+  ctrlKey: boolean;
+  metaKey: boolean;
+  altKey: boolean;
+  shiftKey: boolean;
+  isComposing: boolean;
+}): 'submit' | 'end' | null {
+  if (e.isComposing) return null;
+  if (e.key === 'Enter') return 'submit';
+  if (e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'd') return 'end';
+  return null;
+}
+
+/** Color of the Tests tab badge: red once a test failed, teal when all passed, otherwise gray (not run or stopped). */
+export function testsBadgeColor(summary: { passed: number; total: number; ran: number } | null): 'red' | 'teal' | 'gray' {
+  if (!summary) return 'gray';
+  if (summary.passed < summary.ran) return 'red';
+  return summary.ran === summary.total ? 'teal' : 'gray';
+}
+
+/**
+ * One step of fitting a row on one line (see useFitLevel). Steps to a more compact level while the row overflows,
+ * and back to a wider level once there is room for the width that level needed (`natural[level]`).
+ */
+export function nextFitLevel(
+  level: number,
+  maxLevel: number,
+  available: number,
+  needed: number,
+  natural: readonly (number | undefined)[],
+): number {
+  if (level < maxLevel && needed > available + 1) return level + 1;
+  const wider = level > 0 ? natural[level - 1] : undefined;
+  if (wider != null && wider <= available + 1) return level - 1;
+  return level;
 }
 
 /** "Starting Python… the first run downloads about 10 MB" (size taken from the language catalog). */

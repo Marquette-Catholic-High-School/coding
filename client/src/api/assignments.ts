@@ -11,8 +11,9 @@ import type {
   SubmitInput,
   UpdateAssignmentInput,
 } from '@codeclass/shared';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient, type QueryKey } from '@tanstack/react-query';
 import { api, queryKeys } from './client';
+import { entityQueries, refreshAfterDelete } from './deletedQueries';
 
 export function useClassAssignments(classId: number) {
   return useQuery({
@@ -25,18 +26,17 @@ export function useAssignment(id: number) {
   return useQuery({ queryKey: queryKeys.assignments.detail(id), queryFn: () => api.get<AssignmentResponse>(`/assignments/${id}`) });
 }
 
-function useInvalidateAssignments() {
+const ASSIGNMENT_RELATED: QueryKey[] = [queryKeys.assignments.all, queryKeys.classes.all, queryKeys.dashboard];
+/** Creating, editing or deleting an assignment can change a language's usage count ("Used by 3 assignments"). */
+const ASSIGNMENT_DEFINITION_RELATED: QueryKey[] = [...ASSIGNMENT_RELATED, queryKeys.languages.all];
+
+function useInvalidateAssignments(related = ASSIGNMENT_RELATED) {
   const qc = useQueryClient();
-  return () =>
-    Promise.all([
-      qc.invalidateQueries({ queryKey: queryKeys.assignments.all }),
-      qc.invalidateQueries({ queryKey: queryKeys.classes.all }),
-      qc.invalidateQueries({ queryKey: queryKeys.dashboard }),
-    ]);
+  return () => Promise.all(related.map((queryKey) => qc.invalidateQueries({ queryKey })));
 }
 
 export function useCreateAssignment(classId: number) {
-  const invalidate = useInvalidateAssignments();
+  const invalidate = useInvalidateAssignments(ASSIGNMENT_DEFINITION_RELATED);
   return useMutation({
     mutationFn: (input: AssignmentInput) => api.post<AssignmentResponse>(`/classes/${classId}/assignments`, input),
     onSuccess: invalidate,
@@ -44,7 +44,7 @@ export function useCreateAssignment(classId: number) {
 }
 
 export function useUpdateAssignment(id: number) {
-  const invalidate = useInvalidateAssignments();
+  const invalidate = useInvalidateAssignments(ASSIGNMENT_DEFINITION_RELATED);
   return useMutation({
     mutationFn: (input: UpdateAssignmentInput) => api.patch<AssignmentResponse>(`/assignments/${id}`, input),
     onSuccess: invalidate,
@@ -52,10 +52,10 @@ export function useUpdateAssignment(id: number) {
 }
 
 export function useDeleteAssignment() {
-  const invalidate = useInvalidateAssignments();
+  const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: number) => api.delete<OkResponse>(`/assignments/${id}`),
-    onSuccess: invalidate,
+    onSuccess: (_data, id) => refreshAfterDelete(qc, entityQueries('assignments', id), ASSIGNMENT_DEFINITION_RELATED),
   });
 }
 

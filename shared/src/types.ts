@@ -151,7 +151,12 @@ export interface Submission {
   grade: number | null;
   feedback: string | null;
   gradedAt: string | null;
-  /** Submitted after the due date, or not submitted and the due date has passed. */
+  /**
+   * When the teacher last returned the work for revision (stays set after the student hands it in again), or null.
+   * Returned work can be handed in after the due date even when late work is off, and is never late.
+   */
+  returnedAt: string | null;
+  /** Submitted after the due date, or not submitted and the due date has passed (never for returned work). */
   late: boolean;
 }
 

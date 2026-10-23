@@ -1,4 +1,13 @@
-import type { CreateUserInput, OkResponse, Role, TemporaryPasswordResponse, UpdateUserInput, UserResponse, UsersResponse } from '@codeclass/shared';
+import type {
+  CreateUserInput,
+  OkResponse,
+  Role,
+  TemporaryPasswordResponse,
+  UpdateUserInput,
+  User,
+  UserResponse,
+  UsersResponse,
+} from '@codeclass/shared';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, queryKeys } from './client';
 
@@ -23,10 +32,15 @@ export function useCreateUser() {
 }
 
 export function useUpdateUser() {
+  const qc = useQueryClient();
   const invalidate = useInvalidateUsers();
   return useMutation({
     mutationFn: ({ id, ...input }: UpdateUserInput & { id: number }) => api.patch<UserResponse>(`/admin/users/${id}`, input),
-    onSuccess: invalidate,
+    onSuccess: ({ user }) => {
+      // An admin editing their own row: keep the header and Account settings in step.
+      if (qc.getQueryData<User | null>(queryKeys.me)?.id === user.id) qc.setQueryData(queryKeys.me, user);
+      return invalidate();
+    },
   });
 }
 

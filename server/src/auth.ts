@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import type { Request, RequestHandler, Response } from 'express';
+import type { CookieOptions, Request, RequestHandler, Response } from 'express';
 import type { Role, User } from '@codeclass/shared';
 import { config } from './config';
 import { db, type UserRow } from './db';
@@ -7,6 +7,9 @@ import { forbidden, unauthorized } from './http';
 import { toUser } from './mappers';
 
 const COOKIE = 'sid';
+/** Readable (not httpOnly) cookie holding the session's anti-CSRF token, for the client to echo in CSRF_HEADER. */
+export const CSRF_COOKIE = 'cc_csrf';
+export const CSRF_HEADER = 'x-codeclass-token';
 
 // --- Passwords (scrypt, no native deps) -------------------------------------------------------------
 
@@ -49,23 +52,58 @@ export function createSessionToken(userId: number, expires = new Date(Date.now()
   return token;
 }
 
-/** Creates a session for the user and sets the session cookie. */
+/**
+ * The anti-CSRF token of a session, derived from its raw token so nothing extra is stored. The page's main thread reads
+ * it from the `cc_csrf` cookie and sends it as `x-codeclass-token`. Student code runs in Web Workers on our origin:
+ * their requests carry the session cookie, but workers can't read cookies, so they can't send this token.
+ */
+export function csrfTokenFor(sessionToken: string): string {
+  return crypto.createHash('sha256').update(`csrf:${sessionToken}`).digest('base64url');
+}
+
+function cookieOptions(expires: Date, httpOnly: boolean): CookieOptions {
+  return { httpOnly, sameSite: 'lax', secure: config.cookieSecure, expires, path: '/' };
+}
+
+/** Creates a session for the user and sets the session cookie plus its readable anti-CSRF cookie. */
 export function startSession(res: Response, userId: number): void {
   const expires = new Date(Date.now() + config.sessionDays * 86_400_000);
   const token = createSessionToken(userId, expires);
-  res.cookie(COOKIE, token, {
-    httpOnly: true,
-    sameSite: 'lax',
-    secure: config.cookieSecure,
-    expires,
-    path: '/',
-  });
+  res.cookie(COOKIE, token, cookieOptions(expires, true));
+  res.cookie(CSRF_COOKIE, csrfTokenFor(token), cookieOptions(expires, false));
 }
 
 export function endSession(req: Request, res: Response): void {
   const token = req.cookies?.[COOKIE];
   if (typeof token === 'string') db.prepare('DELETE FROM sessions WHERE id = ?').run(hashToken(token));
   res.clearCookie(COOKIE, { path: '/' });
+  res.clearCookie(CSRF_COOKIE, { path: '/' });
+}
+
+function safeEqual(a: string, b: string): boolean {
+  const x = Buffer.from(a);
+  const y = Buffer.from(b);
+  return x.length === y.length && crypto.timingSafeEqual(x, y);
+}
+
+/**
+ * For a request with a valid session: true when it carries the session's anti-CSRF token. When it doesn't and the
+ * `cc_csrf` cookie is missing or stale (sessions started before the cookie existed), sets that cookie again on `res`
+ * so the client can read it and retry.
+ */
+export function hasCsrfToken(req: Request, res: Response): boolean {
+  const token = req.cookies?.[COOKIE];
+  if (typeof token !== 'string' || token.length === 0) return false;
+  const expected = csrfTokenFor(token);
+  const sent = req.get(CSRF_HEADER);
+  if (typeof sent === 'string' && safeEqual(sent, expected)) return true;
+  if (req.cookies?.[CSRF_COOKIE] !== expected) {
+    const session = db.prepare('SELECT expires_at FROM sessions WHERE id = ?').get(hashToken(token)) as
+      | { expires_at: string }
+      | undefined;
+    if (session) res.cookie(CSRF_COOKIE, expected, cookieOptions(new Date(session.expires_at), false));
+  }
+  return false;
 }
 
 /** Signs a user out everywhere except (optionally) the current session — used after password changes/resets. */

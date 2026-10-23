@@ -1,6 +1,7 @@
 import type { CreateProjectInput, OkResponse, ProjectResponse, ProjectsResponse, UpdateProjectInput } from '@codeclass/shared';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, queryKeys } from './client';
+import { entityQueries, refreshAfterDelete } from './deletedQueries';
 
 export function useProjects() {
   return useQuery({ queryKey: queryKeys.projects.all, queryFn: () => api.get<ProjectsResponse>('/projects') });
@@ -38,6 +39,6 @@ export function useDeleteProject() {
   const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: number) => api.delete<OkResponse>(`/projects/${id}`),
-    onSuccess: () => qc.invalidateQueries({ queryKey: queryKeys.projects.all }),
+    onSuccess: (_data, id) => refreshAfterDelete(qc, entityQueries('projects', id), [queryKeys.projects.all]),
   });
 }

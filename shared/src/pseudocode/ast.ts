@@ -33,7 +33,15 @@ export interface CallExpr extends Pos {
   builtin: PseudoBuiltin | null;
 }
 
-export type Expr = NumberLit | StringLit | BoolLit | VarRef | ListLit | IndexExpr | InputExpr | UnaryExpr | BinaryExpr | CallExpr;
+/** `ARRAY[1:5] OF INTEGER` in a DECLARE: a list per bound pair (nested for 2-D), filled with the type's default. */
+export interface NewArrayExpr extends Pos {
+  k: 'newArray';
+  bounds: Array<{ low: Expr; high: Expr }>;
+  fill: number | string | boolean;
+}
+
+export type Expr =
+  | NumberLit | StringLit | BoolLit | VarRef | ListLit | IndexExpr | InputExpr | UnaryExpr | BinaryExpr | CallExpr | NewArrayExpr;
 
 /** Something a value can be stored in. */
 export type Target = VarRef | IndexExpr;
@@ -65,6 +73,8 @@ export type Stmt =
 export interface FuncDef extends Pos {
   name: string;
   params: string[];
+  /** Per parameter: BYREF (the caller's variable gets the final value back when the call ends). */
+  byRef: boolean[];
   body: Stmt[];
   isProcedure: boolean;
   /** True when the body contains `RETURN value` somewhere. */

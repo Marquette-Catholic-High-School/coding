@@ -5,6 +5,7 @@ import {
   Avatar,
   Badge,
   Burger,
+  Button,
   Divider,
   Group,
   Menu,
@@ -28,6 +29,7 @@ import {
   IconLogout,
   IconMoon,
   IconPackages,
+  IconRefresh,
   IconSchool,
   IconSun,
   IconUserCircle,
@@ -36,7 +38,7 @@ import {
 import { useEffect } from 'react';
 import { Link, Outlet, useLocation, useNavigate, useNavigationType } from 'react-router';
 import { useClasses } from '../api/classes';
-import { isStaff, useCurrentUser, useAuth } from '../auth/AuthProvider';
+import { isStaff, useCurrentUser, useSignOut } from '../auth/AuthProvider';
 import { BrandMark } from '../components/BrandMark';
 
 function ColorSchemeToggle() {
@@ -54,7 +56,7 @@ function ColorSchemeToggle() {
 
 function AccountMenu() {
   const user = useCurrentUser();
-  const { logout } = useAuth();
+  const signOut = useSignOut();
   const navigate = useNavigate();
   return (
     <Menu position="bottom-end" width={220}>
@@ -87,7 +89,7 @@ function AccountMenu() {
           color="red"
           leftSection={<IconLogout size={16} />}
           onClick={async () => {
-            await logout();
+            await signOut();
             navigate('/login', { replace: true });
           }}
         >
@@ -99,7 +101,7 @@ function AccountMenu() {
 }
 
 function ClassLinks() {
-  const { data, isPending } = useClasses();
+  const { data, isPending, refetch } = useClasses();
   const { pathname } = useLocation();
   if (isPending) {
     return (
@@ -109,7 +111,20 @@ function ClassLinks() {
       </Stack>
     );
   }
-  const classes = data?.classes ?? [];
+  // The first load failed (a failed background refetch keeps showing the last list instead).
+  if (!data) {
+    return (
+      <Stack gap={4} align="flex-start" px="sm">
+        <Text size="sm" c="dimmed">
+          Couldn't load your classes.
+        </Text>
+        <Button variant="subtle" size="compact-sm" leftSection={<IconRefresh size={14} />} onClick={() => void refetch()}>
+          Try again
+        </Button>
+      </Stack>
+    );
+  }
+  const classes = data.classes;
   if (classes.length === 0) {
     return (
       <Text size="sm" c="dimmed" px="sm">

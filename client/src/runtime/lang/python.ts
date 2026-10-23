@@ -1,10 +1,14 @@
-// Python runner (Pyodide, loaded from the CDN on first use). Each run gets a fresh globals dict; stdout/stderr are
-// raw byte streams so prompts printed by input() (no newline) reach the console before the input request; stdin
-// reads lines through the worker's input source (end of input -> EOFError, as in a real terminal).
+// Python runner (Pyodide, loaded from the CDN on first use). Each run gets a fresh globals dict and the builtins
+// as they were before the first run; imported modules and files stay for later runs in the same worker (graders
+// pass `freshWorker`). stdout/stderr are raw byte streams so prompts printed by input() (no newline) reach the
+// console before the input request; stdin reads lines through the worker's input source (end of input ->
+// EOFError, as in a real terminal). Once Pyodide has loaded, the worker's network APIs are blocked except for
+// package downloads from the Pyodide CDN, and programs can't import the modules that lead to JavaScript.
 
 import { PYODIDE_INDEX_URL } from '@codeclass/shared';
 import type { RunError } from '../types';
 import { describeError, failure, OK, type LangResult, type LanguageRunner, type RunIO } from './io';
+import { blockNetwork, NETWORK_BLOCKED_MESSAGE } from './network';
 
 // Minimal typings for the parts of Pyodide used here (Pyodide is loaded from the CDN, not installed).
 interface PyCallable {
@@ -33,9 +37,49 @@ interface PyodideModule {
 const SOURCE_NAME = 'main.py';
 
 // Runs student code with a fresh globals dict and reports problems as JSON (message, line, column, details).
-// The helper's own frame is dropped from tracebacks, so they start at the student's code.
+// The helper's own frame is dropped from tracebacks, so they start at the student's code. While a program runs,
+// the modules that reach JavaScript (and through it the network) can't be imported: they are taken out of
+// sys.modules and their packages, and a finder refuses them. This is a clear message rather than a wall (Python
+// code can still find JavaScript objects); the worker's network APIs are blocked as well (see network.ts).
 const HELPER = String.raw`
-import builtins, json, linecache, sys, traceback
+import builtins, importlib.abc, json, linecache, sys, traceback
+
+_codeclass_blocked = ("js", "pyodide_js", "pyodide.code", "pyodide.ffi", "pyodide.http", "pyodide_http", "micropip")
+_codeclass_builtins = dict(builtins.__dict__)
+
+class _CodeclassBlocker(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname in _codeclass_blocked:
+            message = ${JSON.stringify(NETWORK_BLOCKED_MESSAGE.replace(/\.$/, ''))} + ", so %r is not available." % fullname
+            raise ModuleNotFoundError(message, name=fullname)
+        return None
+
+_codeclass_blocker = _CodeclassBlocker()
+
+def _codeclass_hide_modules():
+    hidden = []
+    for name in _codeclass_blocked:
+        module = sys.modules.pop(name, None)
+        if module is not None:
+            hidden.append((sys.modules, name, module))
+        parent, _, child = name.rpartition(".")
+        package = vars(sys.modules[parent]) if parent and parent in sys.modules else None
+        if package is not None and child in package:
+            hidden.append((package, child, package.pop(child)))
+    sys.meta_path.insert(0, _codeclass_blocker)
+    return hidden
+
+def _codeclass_restore(hidden):
+    while _codeclass_blocker in sys.meta_path:
+        sys.meta_path.remove(_codeclass_blocker)
+    for namespace, name, value in hidden:
+        namespace[name] = value
+    current = builtins.__dict__
+    for name in [name for name in current if name not in _codeclass_builtins]:
+        del current[name]
+    for name, value in _codeclass_builtins.items():
+        if current.get(name, _codeclass_blocker) is not value:
+            current[name] = value
 
 def _codeclass_run(source):
     filename = "${SOURCE_NAME}"
@@ -49,8 +93,13 @@ def _codeclass_run(source):
             pass
     scope = {"__name__": "__main__", "__file__": filename, "__builtins__": builtins}
     result = None
+    hidden = _codeclass_hide_modules()
     try:
-        exec(compile(source, filename, "exec", dont_inherit=True), scope)
+        try:
+            exec(compile(source, filename, "exec", dont_inherit=True), scope)
+        finally:
+            # Before reporting, so a program that broke a builtin can't break the error report.
+            _codeclass_restore(hidden)
     except SystemExit as exc:
         status = exc.code
         if status is None or status == 0:
@@ -63,6 +112,12 @@ def _codeclass_run(source):
         tb = exc.__traceback__
         if tb is not None:
             tb = tb.tb_next
+        # A refused import ends in the blocker's own frame, which is not the student's business.
+        last = tb
+        while last is not None and last.tb_next is not None:
+            if last.tb_next.tb_next is None and last.tb_next.tb_frame.f_code is _CodeclassBlocker.find_spec.__code__:
+                last.tb_next = None
+            last = last.tb_next
         line = column = None
         if isinstance(exc, SyntaxError) and exc.filename == filename:
             line, column = exc.lineno, exc.offset
@@ -134,6 +189,8 @@ async function loadRuntime(): Promise<void> {
   py.setStdin({ read: readStdin, isatty: false });
   py.runPython(HELPER);
   runHelper = py.globals.get('_codeclass_run') as PyCallable;
+  // Packages (prepare) still download from the Pyodide CDN; nothing else can be reached from here on.
+  blockNetwork({ allowFetch: (url) => url.href.startsWith(PYODIDE_INDEX_URL) });
   pyodide = py;
 }
 

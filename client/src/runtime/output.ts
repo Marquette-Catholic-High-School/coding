@@ -1,15 +1,24 @@
-// Worker-side output buffer: merges writes into chunks, sends them at most every ~30 ms, enforces the output
-// cap and remembers the unfinished stdout line (the prompt shown before an input request).
+// Worker-side output buffer: merges writes into chunks and sends them to the main thread, enforces the output cap
+// and remembers the unfinished stdout line (the prompt shown before an input request).
 //
-// Language runtimes often run synchronously and never yield to the event loop, so flushing is checked on every
-// write (leading edge) as well as by a timer for code that does yield (async JavaScript).
+// Language runtimes often run synchronously and never yield to the event loop, so a batching timer may never fire.
+// Writes are therefore sent straight away until `burst` messages went out within one interval; only a flood of
+// output is held back, and it goes out with the next write after the interval (or from the timer, for code that
+// yields). Output that is held back is also mirrored into the output tail, which the main thread reads if it has
+// to stop a program that never yields again.
 
-import { MAX_OUTPUT_CHARS, OUTPUT_FLUSH_MS, OUTPUT_LIMIT_MESSAGE } from './protocol';
+import { MAX_OUTPUT_CHARS, OUTPUT_BURST, OUTPUT_FLUSH_MS, OUTPUT_LIMIT_MESSAGE } from './protocol';
+import type { OutputTailSink } from './outputTail';
 import type { OutputChunk, OutputStream } from './types';
 
 export interface OutputBufferOptions {
-  send: (chunks: OutputChunk[]) => void;
+  /** Posts one batch; `batch` counts the batches from 1. */
+  send: (chunks: OutputChunk[], batch: number) => void;
+  /** Mirror of the output that has not been sent yet (see outputTail.ts). */
+  tail?: OutputTailSink | null;
   intervalMs?: number;
+  /** Batches sent straight away within one interval before writes are held back. */
+  burst?: number;
   maxChars?: number;
   now?: () => number;
   schedule?: (fn: () => void, ms: number) => unknown;
@@ -25,12 +34,16 @@ export class OutputBuffer {
   private chunks: OutputChunk[] = [];
   private total = 0;
   private capped = false;
-  private lastFlush = Number.NEGATIVE_INFINITY;
+  private batch = 1;
+  private windowStart = Number.NEGATIVE_INFINITY;
+  private sentInWindow = 0;
   private timer: unknown = null;
   private partialLine = '';
   private endsWithNewline = true;
-  private readonly send: (chunks: OutputChunk[]) => void;
+  private readonly send: (chunks: OutputChunk[], batch: number) => void;
+  private readonly tail: OutputTailSink | null;
   private readonly intervalMs: number;
+  private readonly burst: number;
   private readonly maxChars: number;
   private readonly now: () => number;
   private readonly schedule: (fn: () => void, ms: number) => unknown;
@@ -38,7 +51,9 @@ export class OutputBuffer {
 
   constructor(options: OutputBufferOptions) {
     this.send = options.send;
+    this.tail = options.tail ?? null;
     this.intervalMs = options.intervalMs ?? OUTPUT_FLUSH_MS;
+    this.burst = options.burst ?? OUTPUT_BURST;
     this.maxChars = options.maxChars ?? MAX_OUTPUT_CHARS;
     this.now = options.now ?? (() => performance.now());
     this.schedule = options.schedule ?? ((fn, ms) => defaultSchedule(fn, ms));
@@ -66,8 +81,13 @@ export class OutputBuffer {
       return;
     }
     this.append(stream, text);
-    if (this.now() - this.lastFlush >= this.intervalMs) this.flush();
-    else if (this.timer === null) this.timer = this.schedule(() => this.flush(), this.intervalMs);
+    const now = this.now();
+    if (now - this.windowStart >= this.intervalMs) {
+      this.windowStart = now;
+      this.sentInWindow = 0;
+    }
+    if (this.sentInWindow < this.burst) this.flush();
+    else if (this.timer === null) this.timer = this.schedule(() => this.flush(), this.windowStart + this.intervalMs - now);
   }
 
   /** Echo of a line the program read from pre-supplied input. */
@@ -75,16 +95,23 @@ export class OutputBuffer {
     this.write('stdin', `${line}\n`);
   }
 
+  /** The program got an answer typed in the console (echoed by the page) or end of input: the prompt is used up. */
+  markInputConsumed(): void {
+    this.partialLine = '';
+  }
+
   flush(): void {
     if (this.timer !== null) {
       this.cancel(this.timer);
       this.timer = null;
     }
-    this.lastFlush = this.now();
     if (this.chunks.length === 0) return;
     const chunks = this.chunks;
     this.chunks = [];
-    this.send(chunks);
+    const batch = this.batch++;
+    this.sentInWindow++;
+    this.send(chunks, batch);
+    this.tail?.sent(batch);
   }
 
   private append(stream: OutputStream, text: string): void {
@@ -92,6 +119,7 @@ export class OutputBuffer {
     const last = this.chunks[this.chunks.length - 1];
     if (last && last.stream === stream) last.text += text;
     else this.chunks.push({ stream, text });
+    this.tail?.record(this.batch, stream, text);
     this.endsWithNewline = text.endsWith('\n');
     if (stream === 'stdout') {
       const newline = text.lastIndexOf('\n');

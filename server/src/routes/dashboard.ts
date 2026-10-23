@@ -48,7 +48,7 @@ function teacherDashboard(user: User): TeacherDashboard {
   const toGradeRows = db
     .prepare(
       `SELECT s.assignment_id, a.title, a.class_id, c.name AS class_name, a.due_at, u.id AS student_id,
-              u.name AS student_name, COALESCE(s.submitted_at, s.updated_at) AS handed_in_at
+              u.name AS student_name, COALESCE(s.submitted_at, s.updated_at) AS handed_in_at, s.returned_at
        ${toGradeFrom}
        ORDER BY handed_in_at ASC, s.id ASC
        LIMIT 10`,
@@ -62,6 +62,7 @@ function teacherDashboard(user: User): TeacherDashboard {
     student_id: number;
     student_name: string;
     handed_in_at: string;
+    returned_at: string | null;
   }>;
   const toGrade: ToGradeItem[] = toGradeRows.map((r) => ({
     assignmentId: r.assignment_id,
@@ -70,21 +71,21 @@ function teacherDashboard(user: User): TeacherDashboard {
     className: r.class_name,
     student: { id: r.student_id, name: r.student_name },
     submittedAt: r.handed_in_at,
-    late: isLate(r.due_at, 'submitted', r.handed_in_at, now),
+    late: isLate(r.due_at, 'submitted', r.handed_in_at, r.returned_at, now),
   }));
 
   // Late or missing: every (enrolled student, published assignment with a due date) pair that is late.
   const pairs = db
     .prepare(
-      `SELECT a.due_at, s.status, s.submitted_at
+      `SELECT a.due_at, s.status, s.submitted_at, s.returned_at
        FROM assignments a
        JOIN classes c ON c.id = a.class_id
        JOIN enrollments e ON e.class_id = a.class_id
        LEFT JOIN submissions s ON s.assignment_id = a.id AND s.student_id = e.user_id
        WHERE a.published = 1 AND a.due_at IS NOT NULL AND ${scope}`,
     )
-    .all(...args) as Array<{ due_at: string; status: SubmissionStatus | null; submitted_at: string | null }>;
-  const lateCount = pairs.filter((p) => isLate(p.due_at, p.status ?? 'not_started', p.submitted_at, now)).length;
+    .all(...args) as Array<{ due_at: string; status: SubmissionStatus | null; submitted_at: string | null; returned_at: string | null }>;
+  const lateCount = pairs.filter((p) => isLate(p.due_at, p.status ?? 'not_started', p.submitted_at, p.returned_at, now)).length;
 
   // Due in the next 14 days. The SQL range is a coarse pre-filter (with a day of slack for timezone offsets in
   // the stored strings); the exact window is checked on parsed dates.
@@ -145,7 +146,7 @@ function studentDashboard(user: User): StudentDashboard {
   const rows = db
     .prepare(
       `SELECT a.id, a.title, a.class_id, c.name AS class_name, a.language_id, a.due_at, a.points,
-              s.status, s.submitted_at, s.grade, s.graded_at
+              s.status, s.submitted_at, s.returned_at, s.grade, s.graded_at
        FROM assignments a
        JOIN classes c ON c.id = a.class_id
        JOIN enrollments e ON e.class_id = a.class_id AND e.user_id = ?
@@ -162,6 +163,7 @@ function studentDashboard(user: User): StudentDashboard {
     points: number;
     status: Exclude<SubmissionStatus, 'not_started'> | null;
     submitted_at: string | null;
+    returned_at: string | null;
     grade: number | null;
     graded_at: string | null;
   }>;
@@ -177,7 +179,7 @@ function studentDashboard(user: User): StudentDashboard {
       dueAt: r.due_at,
       points: r.points,
       status,
-      late: isLate(r.due_at, status, r.submitted_at, now),
+      late: isLate(r.due_at, status, r.submitted_at, r.returned_at, now),
       grade: status === 'graded' ? r.grade : null,
     };
     return { item, gradedAt: r.graded_at ? Date.parse(r.graded_at) : 0 };

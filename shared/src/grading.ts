@@ -35,18 +35,30 @@ export function inputLines(input: string): string[] {
   return lines;
 }
 
-/** Weighted percentage (0–100, rounded to 1 decimal) of tests passed; null when there are no tests or results. */
+/** A test's weight in the auto-score: its points (0 = no weight). Missing or invalid points count as 1, the default. */
+function testWeight(test: TestCase): number {
+  const points = test.points as number | null | undefined;
+  return typeof points === 'number' && Number.isFinite(points) ? Math.max(0, points) : 1;
+}
+
+/**
+ * Weighted percentage (0–100, rounded to 1 decimal) of tests passed; null when there are no tests or results.
+ * Each test weighs its points, so a 0-point test doesn't change the score. If every test is worth 0 points, the
+ * tests count equally.
+ */
 export function computeAutoScore(tests: TestCase[], results: TestResult[]): number | null {
   if (tests.length === 0 || results.length === 0) return null;
   const byId = new Map(results.map((r) => [r.testId, r]));
+  let weights = tests.map(testWeight);
+  if (weights.every((w) => w === 0)) weights = tests.map(() => 1);
   let total = 0;
   let earned = 0;
-  for (const t of tests) {
-    const weight = Math.max(0, t.points || 0) || 1;
+  tests.forEach((t, i) => {
+    const weight = weights[i]!;
     total += weight;
     if (byId.get(t.id)?.passed) earned += weight;
-  }
-  return total === 0 ? null : Math.round((earned / total) * 1000) / 10;
+  });
+  return Math.round((earned / total) * 1000) / 10;
 }
 
 export const COMPARE_MODE_LABELS: Record<CompareMode, string> = {

@@ -1,7 +1,7 @@
 // Sign in/out, the current user, student self-registration, the public join preview, password and profile.
 
 import crypto from 'node:crypto';
-import { Router } from 'express';
+import { Router, type Request } from 'express';
 import {
   changePasswordSchema,
   loginSchema,
@@ -13,52 +13,19 @@ import {
 } from '@codeclass/shared';
 import { currentUser, endOtherSessions, endSession, hashPassword, requireAuth, startSession, verifyPassword } from '../auth';
 import { db, type ClassRow, type UserRow } from '../db';
-import { badRequest, conflict, HttpError, notFound, parseBody, unauthorized } from '../http';
+import { badRequest, conflict, notFound, parseBody, unauthorized } from '../http';
 import { toUser } from '../mappers';
+import { checkJoinCodeAttempts, FailureLimiter, recordJoinCodeMiss } from '../rateLimit';
 
 export const router = Router();
 
 // --- Login rate limiting (in memory, per IP + login) ------------------------------------------------
 
-const LOGIN_WINDOW_MS = 10 * 60_000;
-const LOGIN_MAX_FAILURES = 10;
-/** Upper bound on tracked keys so a flood of distinct logins can't grow the map without limit. */
-const MAX_TRACKED_KEYS = 10_000;
-const SWEEP_INTERVAL_MS = 60_000;
+const loginFailures = new FailureLimiter(10 * 60_000, 10);
 
-interface FailedAttempts {
-  failures: number;
-  resetAt: number;
-}
-
-const loginFailures = new Map<string, FailedAttempts>();
-let lastSweep = 0;
-
-function sweepLoginFailures(now: number): void {
-  if (now - lastSweep < SWEEP_INTERVAL_MS && loginFailures.size < MAX_TRACKED_KEYS) return;
-  lastSweep = now;
-  for (const [key, entry] of loginFailures) if (entry.resetAt <= now) loginFailures.delete(key);
-  // Map iteration is insertion order, so this drops the oldest windows first.
-  for (const key of loginFailures.keys()) {
-    if (loginFailures.size < MAX_TRACKED_KEYS) break;
-    loginFailures.delete(key);
-  }
-}
-
-function activeFailures(key: string, now: number): FailedAttempts | undefined {
-  const entry = loginFailures.get(key);
-  if (entry && entry.resetAt <= now) {
-    loginFailures.delete(key);
-    return undefined;
-  }
-  return entry;
-}
-
-function recordLoginFailure(key: string, now: number): void {
-  sweepLoginFailures(now);
-  const entry = activeFailures(key, now);
-  if (entry) entry.failures += 1;
-  else loginFailures.set(key, { failures: 1, resetAt: now + LOGIN_WINDOW_MS });
+/** Limiter key: the login is hashed so every entry stays small, however long the submitted login. */
+function loginKey(req: Request, login: string): string {
+  return `${req.ip ?? 'unknown'}|${crypto.createHash('sha256').update(login.toLowerCase()).digest('base64url')}`;
 }
 
 // Verifying against a throwaway hash when the account doesn't exist keeps response times the same,
@@ -88,14 +55,8 @@ function loadUserRow(id: number): UserRow {
 
 router.post('/auth/login', (req, res) => {
   const input = parseBody(loginSchema, req.body);
-  const now = Date.now();
-  const key = `${req.ip ?? 'unknown'}|${input.login.toLowerCase()}`;
-
-  const attempts = activeFailures(key, now);
-  if (attempts && attempts.failures >= LOGIN_MAX_FAILURES) {
-    res.setHeader('Retry-After', String(Math.ceil((attempts.resetAt - now) / 1000)));
-    throw new HttpError(429, 'Too many sign-in attempts. Please wait a few minutes and try again.');
-  }
+  const key = loginKey(req, input.login);
+  loginFailures.check(key, res, 'Too many sign-in attempts. Please wait a few minutes and try again.');
 
   // Both columns are COLLATE NOCASE. A username match wins over an email match.
   const row = db
@@ -106,11 +67,11 @@ router.post('/auth/login', (req, res) => {
   if (row) valid = verifyPassword(input.password, row.password_hash);
   else verifyDummyPassword(input.password);
   if (!row || !valid) {
-    recordLoginFailure(key, now);
+    loginFailures.recordFailure(key);
     throw unauthorized('Incorrect username or password');
   }
 
-  loginFailures.delete(key);
+  loginFailures.clear(key);
   startSession(res, row.id);
   res.json({ user: toUser(row) } satisfies UserResponse);
 });
@@ -127,8 +88,10 @@ router.get('/auth/me', requireAuth, (req, res) => {
 router.post('/auth/register', (req, res) => {
   const input = parseBody(registerSchema, req.body);
 
+  checkJoinCodeAttempts(req, res, 'joinCode');
   const cls = db.prepare('SELECT * FROM classes WHERE join_code = ?').get(input.joinCode) as ClassRow | undefined;
   if (!cls) {
+    recordJoinCodeMiss(req);
     const message = "We couldn't find a class with that code. Check it with your teacher.";
     throw badRequest(message, { joinCode: message });
   }
@@ -155,6 +118,7 @@ router.post('/auth/register', (req, res) => {
 });
 
 router.get('/join/:code', (req, res) => {
+  checkJoinCodeAttempts(req, res);
   const code = String(req.params.code ?? '').trim().toUpperCase();
   if (!/^[A-Z0-9]{6}$/.test(code)) throw notFound('No class uses that code');
   const row = db
@@ -163,7 +127,10 @@ router.get('/join/:code', (req, res) => {
        FROM classes c JOIN users u ON u.id = c.owner_id WHERE c.join_code = ?`,
     )
     .get(code) as { class_name: string; join_enabled: 0 | 1; archived: 0 | 1; teacher_name: string } | undefined;
-  if (!row) throw notFound('No class uses that code');
+  if (!row) {
+    recordJoinCodeMiss(req);
+    throw notFound('No class uses that code');
+  }
   res.json({
     className: row.class_name,
     teacherName: row.teacher_name,

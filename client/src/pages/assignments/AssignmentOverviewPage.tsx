@@ -10,7 +10,6 @@ import {
   Accordion,
   ActionIcon,
   Avatar,
-  Badge,
   Button,
   Card,
   EmptyState,
@@ -49,7 +48,7 @@ import {
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
 import { useAssignment, useDeleteAssignment, useGradeSubmission, useSubmissionRows } from '../../api/assignments';
-import { DraftBadge, LanguageBadge, LateBadge, ScoreText, SubmissionStatusBadge } from '../../components/badges';
+import { DraftBadge, DueBadge, LanguageBadge, LateBadge, ScoreText, SubmissionStatusBadge, TabCountBadge } from '../../components/badges';
 import classes from '../../components/cards.module.css';
 import { Markdown } from '../../components/Markdown';
 import { notifyError, notifySuccess } from '../../components/notify';
@@ -59,7 +58,6 @@ import { RelativeTime } from '../../components/RelativeTime';
 import { StatCard } from '../../components/StatCard';
 import { usePageTitle } from '../../hooks/usePageTitle';
 import { runTests } from '../../runtime';
-import { DueBadge } from './DueBadge';
 import { PreviewModal } from './PreviewModal';
 
 type Filter = 'all' | 'to-grade' | 'missing';
@@ -156,7 +154,7 @@ function Overview({ data }: { data: AssignmentResponse }) {
           await deleteAssignment.mutateAsync(assignment.id);
           modals.close(modalId);
           notifySuccess('Assignment deleted', `"${assignment.title}" has been removed from ${cls.name}.`);
-          navigate(`/classes/${cls.id}`);
+          navigate(`/classes/${cls.id}`, { replace: true });
         } catch (err) {
           modals.updateModal({ modalId, confirmProps: { color: 'red', loading: false } });
           notifyError(err, "Couldn't delete the assignment");
@@ -164,13 +162,6 @@ function Overview({ data }: { data: AssignmentResponse }) {
       },
     });
   };
-
-  const tabCount = (count: number) =>
-    count > 0 ? (
-      <Badge size="xs" variant="light" circle>
-        {count}
-      </Badge>
-    ) : null;
 
   return (
     <>
@@ -279,13 +270,13 @@ function Overview({ data }: { data: AssignmentResponse }) {
       <Card>
         <Tabs value={filter} onChange={setFilter} keepMounted={false}>
           <Tabs.List mb="lg">
-            <Tabs.Tab value="all" leftSection={<IconUsers size={16} />} rightSection={tabCount(stats.students)}>
+            <Tabs.Tab value="all" leftSection={<IconUsers size={16} />} rightSection={<TabCountBadge count={stats.students} />}>
               All
             </Tabs.Tab>
-            <Tabs.Tab value="to-grade" leftSection={<IconChecklist size={16} />} rightSection={tabCount(stats.toGrade)}>
+            <Tabs.Tab value="to-grade" leftSection={<IconChecklist size={16} />} rightSection={<TabCountBadge count={stats.toGrade} />}>
               To grade
             </Tabs.Tab>
-            <Tabs.Tab value="missing" leftSection={<IconInbox size={16} />} rightSection={tabCount(stats.missing)}>
+            <Tabs.Tab value="missing" leftSection={<IconInbox size={16} />} rightSection={<TabCountBadge count={stats.missing} />}>
               Missing
             </Tabs.Tab>
           </Tabs.List>
@@ -364,6 +355,8 @@ function SubmissionsTable({ rows, assignment }: { rows: SubmissionRow[]; assignm
         <Table.Tbody>
           {rows.map(({ student, submission }) => {
             const to = `/assignments/${assignment.id}/submissions/${student.id}`;
+            // The accessible name starts with the visible word so voice control ("click Grade") finds it.
+            const action = submission.status === 'submitted' ? 'Grade' : 'Open';
             return (
               <Table.Tr
                 key={student.id}
@@ -417,9 +410,9 @@ function SubmissionsTable({ rows, assignment }: { rows: SubmissionRow[]; assignm
                     size="xs"
                     rightSection={<IconChevronRight size={14} />}
                     onClick={(e) => e.stopPropagation()}
-                    aria-label={`Open ${student.name}'s work`}
+                    aria-label={`${action} ${student.name}'s work`}
                   >
-                    {submission.status === 'submitted' ? 'Grade' : 'Open'}
+                    {action}
                   </Button>
                 </Table.Td>
               </Table.Tr>
@@ -472,6 +465,8 @@ function useAutogradeAll(assignment: Assignment, language: Language) {
         const results = await runTests({ kind: language.kind, pseudocode: language.pseudocode }, row.submission.code, assignment.tests, {
           compareMode: assignment.compareMode,
           signal: controller.signal,
+          // A new worker per submission, so one student's code can't affect the next one's results.
+          freshWorker: true,
         });
         if (controller.signal.aborted) break;
         try {

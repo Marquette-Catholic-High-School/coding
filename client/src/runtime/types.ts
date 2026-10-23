@@ -55,6 +55,11 @@ export interface RunOptions {
   interactive?: boolean;
   /** Kill the run after this long (excluding runtime loading). Default: none when interactive, 10 s otherwise. */
   timeoutMs?: number;
+  /**
+   * Run in a worker of its own that is thrown away afterwards, so nothing an earlier program changed in a reused
+   * runtime (Python's modules and files) can affect this one. JavaScript and TypeScript always get a fresh worker.
+   */
+  freshWorker?: boolean;
   onOutput?: (chunk: OutputChunk) => void;
   onPhase?: (phase: RunPhase) => void;
   /** Program is waiting for a line of input; `prompt` is any text the program printed without a newline, if known. */
@@ -67,6 +72,11 @@ export interface RunHandle {
   stop(): void;
   /** Answer an input request (no trailing newline). */
   provideInput(line: string): void;
+  /**
+   * End the program's input, like Ctrl+D in a terminal: the waiting read (or the next one, after any lines typed
+   * ahead) gets end-of-file, and so does every read after it. Lines provided afterwards are ignored.
+   */
+  endInput(): void;
 }
 
 export interface TestProgress {
@@ -82,4 +92,10 @@ export interface RunTestsOptions {
   onProgress?: (progress: TestProgress) => void;
   /** Abort remaining tests. */
   signal?: AbortSignal;
+  /**
+   * Grading other people's code: Python runs these tests in a worker of their own, discarded afterwards, so one
+   * program's leftovers (imported modules, files) never reach the next submission. Other languages already start
+   * from a clean state on every run.
+   */
+  freshWorker?: boolean;
 }

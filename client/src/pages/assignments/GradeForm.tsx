@@ -115,7 +115,7 @@ export function GradeForm({
       form.clearErrors();
       markSaved();
       if (rerunResults) onResultsSaved();
-      notifySuccess('Returned for revision', `${student.name} can edit their code and hand it in again.`);
+      notifySuccess('Returned for revision', `${student.name} can edit their code and hand it in again. It won't be marked late.`);
     } catch (err) {
       notifyError(err, "Couldn't return the work");
     } finally {
@@ -128,8 +128,8 @@ export function GradeForm({
       title: 'Return for revision?',
       children: (
         <Text size="sm">
-          {student.name} will be able to edit their code and hand it in again. Your feedback stays with the work
-          {submission.grade != null ? ', and the current grade is removed until you grade it again' : ''}.
+          {student.name} will be able to edit their code and hand it in again, even after the due date, and it won't be marked late.
+          Your feedback stays with the work{submission.grade != null ? ', and the current grade is removed until you grade it again' : ''}.
         </Text>
       ),
       labels: { confirm: 'Return for revision', cancel: 'Cancel' },
@@ -186,6 +186,11 @@ export function GradeForm({
             </Text>
           )}
         </InfoRow>
+        {submission.returnedAt && (
+          <InfoRow label="Returned">
+            <RelativeTime date={submission.returnedAt} size="sm" />
+          </InfoRow>
+        )}
         {submission.updatedAt && (
           <InfoRow label="Last saved">
             <RelativeTime date={submission.updatedAt} size="sm" />

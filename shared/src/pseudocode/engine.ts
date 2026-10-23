@@ -1,9 +1,10 @@
 // Public entry points of the pseudocode engine. Both functions are synchronous and never throw.
-import { PseudoError } from './errors';
+import { PseudoError, runtimeError } from './errors';
 import { Interpreter } from './interpreter';
 import { getLanguage } from './language';
 import { parseProgram } from './parser';
 import type { PseudoDiagnostic, PseudoIO, PseudoRunOptions, PseudoRunResult, PseudocodeConfig } from './types';
+import { ValueTooDeepError } from './values';
 
 const DEFAULT_MAX_STEPS = 5_000_000;
 const DEFAULT_MAX_CALL_DEPTH = 500;
@@ -52,10 +53,18 @@ function positive(value: number | undefined, fallback: number): number {
 function toDiagnostic(e: unknown, phase: 'syntax' | 'runtime', interpreter: Interpreter | null): PseudoDiagnostic {
   if (e instanceof PseudoError) return e.toDiagnostic();
   const message = e instanceof Error ? e.message : String(e);
+  // Problems JavaScript reports without a position are shown at the statement that was running.
+  const problem = (text: string, hint?: string): PseudoDiagnostic => {
+    if (interpreter) return runtimeError(text, interpreter.currentPosition(), hint).toDiagnostic();
+    return { severity: 'error', message: text, ...(hint ? { hint } : {}), line: 1, column: 1, phase };
+  };
+  const deepList = 'A list in your program has lists inside lists too many levels deep for the computer to handle.';
+  if (e instanceof ValueTooDeepError) return problem(deepList);
   if (e instanceof RangeError) {
-    // The JavaScript stack ran out (very deep recursion), or a string grew too long.
+    // The JavaScript stack ran out (very deep recursion or data), or a string or list grew too long.
     if (/stack|recursion/i.test(message)) {
-      if (interpreter) return interpreter.recursionError().toDiagnostic();
+      // Without a FUNCTION / PROCEDURE running, the only deep things left are nested lists.
+      if (interpreter) return interpreter.currentCall ? interpreter.recursionError().toDiagnostic() : problem(deepList);
       return {
         severity: 'error',
         message: 'This program is nested too deeply for me to read.',
@@ -65,8 +74,9 @@ function toDiagnostic(e: unknown, phase: 'syntax' | 'runtime', interpreter: Inte
         phase,
       };
     }
-    if (/string length/i.test(message)) {
-      return { severity: 'error', message: 'Some text in your program got too long for the computer to handle.', line: 1, column: 1, phase };
+    if (/string length/i.test(message)) return problem('Some text in your program got too long for the computer to handle.');
+    if (/array length/i.test(message)) {
+      return problem('A list in your program got too big for the computer to handle.', 'Check for a loop that keeps adding to a list.');
     }
   }
   const what = phase === 'runtime' ? 'running' : 'reading';

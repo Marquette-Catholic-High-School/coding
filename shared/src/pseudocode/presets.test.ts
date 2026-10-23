@@ -225,6 +225,17 @@ describe('normalizePseudocodeConfig', () => {
     }
   });
 
+  it('gives configs stored before DECLARE and CONSTANT existed the default spellings', () => {
+    const { declare: _d, constant: _c, ...oldKeywords } = classroom.keywords;
+    const old = { ...classroom, keywords: oldKeywords };
+    expect(normalizePseudocodeConfig(old)).toEqual(classroom);
+    const parsed = pseudocodeConfigSchema.parse(old);
+    expect(parsed.keywords.declare).toEqual(['DECLARE']);
+    expect(parsed.keywords.constant).toEqual(['CONSTANT']);
+    expect(validatePseudocodeConfig(parsed)).toEqual([]);
+    expect(createPseudocodeConfig('aqa').keywords.constant).toEqual(['constant']);
+  });
+
   it('keeps the case-sensitivity setting when removing duplicate spellings', () => {
     expect(normalizePseudocodeConfig({ keywords: { output: ['SAY', 'say'] } }).keywords.output).toEqual(['SAY']);
     expect(normalizePseudocodeConfig({ caseSensitive: true, keywords: { output: ['SAY', 'say'] } }).keywords.output).toEqual(['SAY', 'say']);
@@ -288,7 +299,7 @@ describe('validatePseudocodeConfig', () => {
       '"/" can\'t start comments because it\'s already an operator.',
     ]);
     expect(validatePseudocodeConfig(edit((c) => (c.commentPrefixes = [])))).toEqual(['Add at least one comment symbol, such as //.']);
-    expect(validatePseudocodeConfig(edit((c) => (c.commentPrefixes = ['#', '--', '%%'])))).toEqual([]);
+    expect(validatePseudocodeConfig(edit((c) => (c.commentPrefixes = ['#', '%%', '!!', '/*'])))).toEqual([]);
     expect(validatePseudocodeConfig(edit((c) => (c.constructs.output = false)))).toEqual([
       'Output must stay switched on — students need it to see what their program does.',
     ]);
@@ -298,6 +309,39 @@ describe('validatePseudocodeConfig', () => {
     expect(validatePseudocodeConfig(edit((c) => ((c as { blockStyle: string }).blockStyle = 'curly')))).toEqual([
       'Block style must be keywords, braces or both.',
     ]);
+  });
+
+  it('rejects comment symbols that would swallow operators written without spaces', () => {
+    const problems = (prefix: string) => validatePseudocodeConfig(edit((c) => (c.commentPrefixes = [prefix])));
+    expect(problems('!')).toEqual(['"!" can\'t start comments because the "!=" operator starts with it.']);
+    expect(problems('--')).toEqual(['"--" can\'t start comments because code like 5--2 uses those symbols.']);
+    expect(problems('*-')).toEqual(['"*-" can\'t start comments because code like 5*-2 uses those symbols.']);
+    expect(problems('=+')).toEqual(['"=+" can\'t start comments because code like 5=+2 uses those symbols.']);
+    expect(problems('(-')).toEqual(['"(-" can\'t start comments because code like (-2) uses those symbols.']);
+    expect(problems('[-')).toEqual(['"[-" can\'t start comments because code like [-2] uses those symbols.']);
+    expect(problems(',-')).toEqual(['",-" can\'t start comments because code like (1,-2) uses those symbols.']);
+    expect(problems('--->')).toHaveLength(1);
+    expect(problems('//')).toEqual([]);
+    expect(problems('->')).toEqual([]);
+    // Stored configs are repaired the same way, so the operators keep working.
+    expect(normalizePseudocodeConfig({ commentPrefixes: ['!', '--', '#'] }).commentPrefixes).toEqual(['#']);
+    expect(normalizePseudocodeConfig({ commentPrefixes: ['!'] }).commentPrefixes).toEqual(['//']);
+  });
+
+  it('rejects a spelling that starts with another spelling of the same keyword', () => {
+    expect(validatePseudocodeConfig(edit((c) => (c.keywords.output = ['PRINT', 'PRINT LINE'])))).toEqual([
+      '"PRINT LINE" and "PRINT" are both spellings of "Output", so PRINT followed by a name called LINE would be read as PRINT LINE. Keep just one of them.',
+    ]);
+    expect(validatePseudocodeConfig(edit((c) => (c.keywords.endIf = ['end if more', 'END IF'])))).toEqual([
+      '"end if more" and "END IF" are both spellings of "End if", so END IF followed by a name called more would be read as end if more. Keep just one of them.',
+    ]);
+    expect(validatePseudocodeConfig(edit((c) => (c.keywords.output = ['PRINT', 'PRINTLINE', 'SHOW ME'])))).toEqual([]);
+    expect(validatePseudocodeConfig(edit((c) => {
+      c.caseSensitive = true;
+      c.keywords.output = ['Print', 'PRINT LINE'];
+    }))).toEqual([]);
+    // Different keywords may share a first word (FOR and FOR EACH, ELSE and ELSE IF).
+    expect(validatePseudocodeConfig(createPseudocodeConfig('classroom'))).toEqual([]);
   });
 
   it('reports several problems at once and never throws on garbage', () => {

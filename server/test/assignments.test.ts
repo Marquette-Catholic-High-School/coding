@@ -149,6 +149,28 @@ describe('update and delete', () => {
     }
   });
 
+  it('rejects lowering the points below a grade students already have', async () => {
+    const { assignment } = await create({ points: 100 });
+    expect((await student.post(`/assignments/${assignment.id}/submit`, { code: 'x' })).status).toBe(200);
+    expect((await teacher.patch(`/assignments/${assignment.id}/submissions/${studentId}`, { grade: 90 })).status).toBe(200);
+
+    const lowered = await teacher.patch(`/assignments/${assignment.id}`, { points: 10, title: 'Not saved' });
+    expect(lowered.status).toBe(400);
+    expect(lowered.body.error.fieldErrors.points).toMatch(/90/);
+    expect((await teacher.get<AssignmentResponse>(`/assignments/${assignment.id}`)).body.assignment).toMatchObject({ points: 100, title: 'Hello' });
+
+    const atGrade = await teacher.patch<AssignmentResponse>(`/assignments/${assignment.id}`, { points: 90 });
+    expect(atGrade.status).toBe(200);
+    expect(atGrade.body.assignment.points).toBe(90);
+    // Other edits don't re-check the points.
+    expect((await teacher.patch(`/assignments/${assignment.id}`, { title: 'Renamed' })).status).toBe(200);
+
+    // Without grades, any points value is fine.
+    const ungraded = await create({ points: 100 });
+    expect((await student.post(`/assignments/${ungraded.assignment.id}/submit`, { code: 'x' })).status).toBe(200);
+    expect((await teacher.patch(`/assignments/${ungraded.assignment.id}`, { points: 5 })).status).toBe(200);
+  });
+
   it('rejects switching to a kind without tests while tests remain', async () => {
     const { assignment } = await create();
     const res = await teacher.patch(`/assignments/${assignment.id}`, { languageId: 'web' });

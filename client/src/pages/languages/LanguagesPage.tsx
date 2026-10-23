@@ -24,7 +24,6 @@ import {
 import { CONSTRUCT_INFO } from '@codeclass/shared/pseudocode';
 import {
   IconBuildingStore,
-  IconCheck,
   IconChecklist,
   IconClipboardList,
   IconDownload,
@@ -42,7 +41,7 @@ import type { ReactNode } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { useInstallLanguage, useLanguageCatalog, useLanguages } from '../../api/languages';
 import { useCurrentUser } from '../../auth/AuthProvider';
-import { BADGE_NO_SHRINK, LanguageBadge } from '../../components/badges';
+import { BADGE_NO_SHRINK, InstalledBadge, LanguageBadge, LanguageDisabledBadge, TabCountBadge } from '../../components/badges';
 import cards from '../../components/cards.module.css';
 import { LanguageIcon } from '../../components/LanguageIcon';
 import { notifyError, notifySuccess } from '../../components/notify';
@@ -50,7 +49,7 @@ import { PageHeader } from '../../components/PageHeader';
 import { QueryState } from '../../components/QueryState';
 import { usePageTitle } from '../../hooks/usePageTitle';
 import { CreatePseudocodeModal } from './CreatePseudocodeModal';
-import { DisabledBadge, ownerLabel, usageLabel } from './languageParts';
+import { ownerLabel, usageLabel } from './languageParts';
 
 type Tab = 'installed' | 'catalog';
 
@@ -95,26 +94,14 @@ export function LanguagesPage() {
           <Tabs.Tab
             value="installed"
             leftSection={<IconPackages size={16} />}
-            rightSection={
-              languages.data && languages.data.languages.length > 0 ? (
-                <Badge size="xs" variant="light" circle>
-                  {languages.data.languages.length}
-                </Badge>
-              ) : null
-            }
+            rightSection={<TabCountBadge count={languages.data?.languages.length ?? 0} />}
           >
             Installed
           </Tabs.Tab>
           <Tabs.Tab
             value="catalog"
             leftSection={<IconBuildingStore size={16} />}
-            rightSection={
-              availableCount > 0 ? (
-                <Badge size="xs" variant="light" circle>
-                  {availableCount}
-                </Badge>
-              ) : null
-            }
+            rightSection={<TabCountBadge count={availableCount} />}
           >
             Catalog
           </Tabs.Tab>
@@ -259,7 +246,7 @@ function LanguageCard({ language, viewerId }: { language: Language; viewerId: nu
           <LanguageIcon kind={language.kind} size={22} />
         </ThemeIcon>
         <Group gap={6} justify="flex-end">
-          {!language.enabled && <DisabledBadge />}
+          {!language.enabled && <LanguageDisabledBadge />}
           <LanguageBadge kind={language.kind} name={LANGUAGE_KIND_LABELS[language.kind]} />
         </Group>
       </Group>
@@ -319,11 +306,7 @@ function Catalog({ isAdmin }: { isAdmin: boolean }) {
                   <ThemeIcon variant="light" size={40} radius="md" color="indigo">
                     <LanguageIcon kind={pack.kind} size={22} />
                   </ThemeIcon>
-                  {pack.installed && (
-                    <Badge variant="light" color="teal" leftSection={<IconCheck size={12} />} {...BADGE_NO_SHRINK}>
-                      Installed
-                    </Badge>
-                  )}
+                  {pack.installed && <InstalledBadge />}
                 </Group>
                 <Text fw={650} size="lg">
                   {pack.name}

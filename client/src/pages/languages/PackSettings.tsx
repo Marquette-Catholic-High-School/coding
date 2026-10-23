@@ -6,11 +6,11 @@ import { useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { fieldErrors } from '../../api/client';
 import { useUpdateLanguage } from '../../api/languages';
-import { LanguageBadge } from '../../components/badges';
+import { LanguageBadge, LanguageDisabledBadge } from '../../components/badges';
 import { notifyError, notifySuccess } from '../../components/notify';
 import { PageHeader } from '../../components/PageHeader';
 import { CodeEditor, CodeWorkspace } from '../../ide';
-import { DisabledBadge, LanguageDangerZone, usageLabel } from './languageParts';
+import { LanguageDangerZone, usageLabel } from './languageParts';
 import { useUnsavedChangesGuard } from './useUnsavedChangesGuard';
 
 interface SettingsValues {
@@ -94,7 +94,7 @@ export function PackSettings({ language }: { language: Language }) {
         badges={
           <>
             <LanguageBadge kind={language.kind} name={LANGUAGE_KIND_LABELS[language.kind]} />
-            {!language.enabled && <DisabledBadge />}
+            {!language.enabled && <LanguageDisabledBadge />}
           </>
         }
         subtitle={`${language.version} · ${usageLabel(language.assignmentCount)}`}

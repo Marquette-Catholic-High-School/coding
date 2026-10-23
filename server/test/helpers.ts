@@ -4,7 +4,7 @@ import { once } from 'node:events';
 import type { AddressInfo } from 'node:net';
 import type { Role } from '@codeclass/shared';
 import { createApp } from '../src/app';
-import { createSessionToken, hashPassword } from '../src/auth';
+import { createSessionToken, csrfTokenFor, hashPassword } from '../src/auth';
 import { db } from '../src/db';
 
 export interface TestResponse<T = any> {
@@ -12,25 +12,33 @@ export interface TestResponse<T = any> {
   body: T;
 }
 
-/** Minimal API client that keeps the session cookie between calls. */
+/**
+ * Minimal API client that keeps the session cookie between calls and, like the real client, echoes the readable
+ * `cc_csrf` cookie in the `x-codeclass-token` header.
+ */
 export class TestClient {
+  /** `sid=<token>`, or '' when signed out. */
   cookie = '';
+  /** The `cc_csrf` cookie value ('' when none). Cleared to simulate a caller that can't read cookies (a Web Worker). */
+  csrf = '';
   constructor(private base: string) {}
 
   async request<T = any>(method: string, path: string, body?: unknown): Promise<TestResponse<T>> {
+    const cookies = [this.cookie, this.csrf ? `cc_csrf=${this.csrf}` : ''].filter(Boolean).join('; ');
     const res = await fetch(this.base + path, {
       method,
       headers: {
         'x-codeclass': '1',
+        ...(this.csrf ? { 'x-codeclass-token': this.csrf } : {}),
         ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
-        ...(this.cookie ? { Cookie: this.cookie } : {}),
+        ...(cookies ? { Cookie: cookies } : {}),
       },
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
-    const setCookie = res.headers.get('set-cookie');
-    if (setCookie) {
-      const sid = /sid=([^;]*)/.exec(setCookie)?.[1];
-      this.cookie = sid ? `sid=${sid}` : '';
+    for (const setCookie of res.headers.getSetCookie()) {
+      const [, name, value = ''] = /^([^=]+)=([^;]*)/.exec(setCookie) ?? [];
+      if (name === 'sid') this.cookie = value ? `sid=${value}` : '';
+      if (name === 'cc_csrf') this.csrf = value;
     }
     const text = await res.text();
     return { status: res.status, body: (text ? JSON.parse(text) : null) as T };
@@ -69,7 +77,9 @@ export function insertUser(role: Role, overrides: { username?: string; name?: st
 /** A client already signed in as `userId` (session created directly, independent of the auth routes). */
 export function clientAs(base: string, userId: number): TestClient {
   const client = new TestClient(base);
-  client.cookie = `sid=${createSessionToken(userId)}`;
+  const token = createSessionToken(userId);
+  client.cookie = `sid=${token}`;
+  client.csrf = csrfTokenFor(token);
   return client;
 }
 

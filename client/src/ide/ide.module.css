@@ -72,6 +72,11 @@
   }
 }
 
+/* A row kept on one line by useFitLevel: its items keep their natural width so overflow can be measured. */
+.noShrink > * {
+  flex-shrink: 0;
+}
+
 .paneHeader {
   display: flex;
   align-items: center;

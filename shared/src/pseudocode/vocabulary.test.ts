@@ -162,6 +162,8 @@ describe('buildVocabulary', () => {
     const aqa = buildVocabulary(createPseudocodeConfig('aqa'));
     expect(aqa.find((v) => v.construct === 'forEach')!.words).toEqual(['FOR', 'IN', 'ENDFOR']);
     expect(aqa.find((v) => v.construct === 'while')!.words).toEqual(['WHILE', 'ENDWHILE']);
+    expect(cam.find((v) => v.construct === 'variables')!.words).toEqual(['←', 'DECLARE', 'CONSTANT']);
+    expect(aqa.find((v) => v.construct === 'variables')!.words).toEqual(['←', 'constant']);
   });
 });
 
@@ -201,6 +203,7 @@ describe('highlightWords', () => {
     expect(words.keywords).toContain('OUTPUT');
     expect(words.keywords.indexOf('FOR EACH')).toBeLessThan(words.keywords.indexOf('FOR'));
     expect(words.keywords.indexOf('ELSE IF')).toBeLessThan(words.keywords.indexOf('ELSE'));
+    expect(words.keywords).toEqual(expect.arrayContaining(['DECLARE', 'CONSTANT']));
     expect(words.lockedKeywords).toEqual([]);
     expect(words.builtins).toContain('LENGTH');
     expect(words.builtins).toHaveLength(BUILTIN_INFO.length);

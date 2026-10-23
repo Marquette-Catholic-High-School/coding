@@ -33,6 +33,8 @@ interface Style {
   forIn: boolean;
   /** `NEXT i`: the loop closer repeats the variable name. */
   closerNamesVariable: boolean;
+  /** Declaration words the exam board uses (Cambridge DECLARE and CONSTANT, AQA constant), shown with variables. */
+  declarations: string[];
   base: 0 | 1;
   separator: string;
   on: (c: PseudoConstruct) => boolean;
@@ -53,6 +55,7 @@ function styleFor(lang: Language): Style {
     input: lang.assign === null ? 'statement' : braces ? 'call' : cfg.presetId === 'aqa' ? 'bare' : 'statement',
     forIn: cfg.presetId === 'aqa',
     closerNamesVariable: lang.kw.endFor.toUpperCase() === 'NEXT',
+    declarations: cfg.presetId === 'cambridge' ? [lang.kw.declare, lang.kw.constant] : cfg.presetId === 'aqa' ? [lang.kw.constant] : [],
     base: cfg.listIndexBase,
     separator: cfg.outputSeparator,
     on: (c) => lang.constructOn(c),
@@ -184,7 +187,7 @@ function constructWords(construct: PseudoConstruct, lang: Language, st: Style): 
       words = [k.input];
       break;
     case 'variables':
-      words = st.arrowFirst ? [st.assign] : [k.set, k.to, st.assign];
+      words = [...(st.arrowFirst ? [st.assign] : [k.set, k.to, st.assign]), ...st.declarations];
       break;
     case 'if':
       words = [k.if, !st.braces && k.then, ends && k.endIf];

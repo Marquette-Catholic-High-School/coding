@@ -7,7 +7,7 @@ import dayjs from 'dayjs';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAssignment, useMySubmission, useSaveSubmission, useSubmitAssignment, useUnsubmitAssignment } from '../../api/assignments';
 import { ApiError, queryKeys } from '../../api/client';
-import { LateBadge, ScoreText, SubmissionStatusBadge } from '../../components/badges';
+import { DueBadge, LateBadge, ScoreText, SubmissionStatusBadge } from '../../components/badges';
 import { Markdown } from '../../components/Markdown';
 import { notifyError, notifySuccess } from '../../components/notify';
 import { PageHeader } from '../../components/PageHeader';
@@ -16,7 +16,6 @@ import { RelativeTime } from '../../components/RelativeTime';
 import { useAutosave } from '../../hooks/useAutosave';
 import { usePageTitle } from '../../hooks/usePageTitle';
 import { CodeWorkspace } from '../../ide';
-import { DueBadge } from '../student/DueBadge';
 import { SaveStatus } from '../student/SaveStatus';
 import { SubmitModal, type SubmitRequest } from '../student/SubmitModal';
 
@@ -55,10 +54,13 @@ function AssignmentWorkspace({ data, submission }: { data: AssignmentResponse; s
   const now = useNow(30_000);
 
   const handedIn = submission.status === 'submitted' || submission.status === 'graded';
+  // Work the teacher returned for revision can be handed in again at any time and is never late.
+  const wasReturned = submission.returnedAt != null;
+  const returned = wasReturned && submission.status === 'in_progress';
   const pastDue = assignment.dueAt != null && now > Date.parse(assignment.dueAt);
-  const closed = pastDue && !assignment.allowLate && !handedIn;
+  const closed = pastDue && !assignment.allowLate && !handedIn && !wasReturned;
   const editable = !handedIn && !closed;
-  const late = submission.late || (!handedIn && pastDue);
+  const late = submission.late || (!handedIn && pastDue && !wasReturned);
 
   const [code, setCode] = useState(submission.code);
   // Coming back from submitted/graded (unsubmit, or returned for revision): start from the server's copy.
@@ -137,7 +139,7 @@ function AssignmentWorkspace({ data, submission }: { data: AssignmentResponse; s
       compareMode: assignment.compareMode,
       hiddenTestCount: assignment.hiddenTestCount,
       dueAt: assignment.dueAt,
-      late: assignment.dueAt != null && Date.now() > Date.parse(assignment.dueAt),
+      late: !wasReturned && assignment.dueAt != null && Date.now() > Date.parse(assignment.dueAt),
     });
   };
 
@@ -168,7 +170,7 @@ function AssignmentWorkspace({ data, submission }: { data: AssignmentResponse; s
   };
 
   const handleUnsubmit = () => {
-    if (!pastDue) {
+    if (!pastDue || wasReturned) {
       void doUnsubmit();
       return;
     }
@@ -236,6 +238,18 @@ function AssignmentWorkspace({ data, submission }: { data: AssignmentResponse; s
         </Stack>
       </Alert>
     );
+  } else if (returned) {
+    banner = (
+      <Alert variant="light" color="orange" icon={<IconArrowBackUp />} title="Returned for revision">
+        <Stack gap="xs">
+          {submission.feedback ? <Feedback source={submission.feedback} /> : <Text size="sm">Your teacher didn't leave written feedback.</Text>}
+          <Text size="sm">
+            Make your changes, then submit again.
+            {pastDue ? " You can still submit after the due date, and it won't be marked late." : ''}
+          </Text>
+        </Stack>
+      </Alert>
+    );
   } else if (closed) {
     banner = (
       <Alert variant="light" color="red" icon={<IconLock />} title="This assignment is closed">
@@ -247,11 +261,8 @@ function AssignmentWorkspace({ data, submission }: { data: AssignmentResponse; s
     );
   } else if (submission.feedback) {
     banner = (
-      <Alert variant="light" color="orange" icon={<IconMessageCircle />} title="Your teacher sent this back for changes">
-        <Stack gap="xs">
-          <Feedback source={submission.feedback} />
-          <Text size="sm">Make your changes, then submit again.</Text>
-        </Stack>
+      <Alert variant="light" color="orange" icon={<IconMessageCircle />} title="Feedback from your teacher">
+        <Feedback source={submission.feedback} />
       </Alert>
     );
   }

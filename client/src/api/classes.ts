@@ -11,6 +11,7 @@ import type {
 } from '@codeclass/shared';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, queryKeys } from './client';
+import { entityQueries, refreshAfterDelete } from './deletedQueries';
 
 export function useClasses(archived = false) {
   return useQuery({
@@ -30,6 +31,13 @@ function useInvalidateClasses() {
       qc.invalidateQueries({ queryKey: queryKeys.classes.all }),
       qc.invalidateQueries({ queryKey: queryKeys.dashboard }),
     ]);
+}
+
+/** Roster changes also change every assignment's submission rows (one per enrolled student). */
+function useInvalidateRoster() {
+  const qc = useQueryClient();
+  const invalidateClasses = useInvalidateClasses();
+  return () => Promise.all([invalidateClasses(), qc.invalidateQueries({ queryKey: queryKeys.assignments.all })]);
 }
 
 export function useCreateClass() {
@@ -57,10 +65,17 @@ export function useRegenerateJoinCode(id: number) {
 }
 
 export function useDeleteClass() {
-  const invalidate = useInvalidateClasses();
+  const qc = useQueryClient();
   return useMutation({
     mutationFn: (id: number) => api.delete<OkResponse>(`/classes/${id}`),
-    onSuccess: invalidate,
+    // Its assignments go too, which changes the languages' usage counts.
+    onSuccess: (_data, id) =>
+      refreshAfterDelete(qc, entityQueries('classes', id), [
+        queryKeys.classes.all,
+        queryKeys.assignments.all,
+        queryKeys.languages.all,
+        queryKeys.dashboard,
+      ]),
   });
 }
 
@@ -78,7 +93,7 @@ export function useRoster(classId: number) {
 }
 
 export function useAddStudent(classId: number) {
-  const invalidate = useInvalidateClasses();
+  const invalidate = useInvalidateRoster();
   return useMutation({
     mutationFn: (input: AddStudentInput) => api.post<AddStudentResponse>(`/classes/${classId}/students`, input),
     onSuccess: invalidate,
@@ -86,7 +101,7 @@ export function useAddStudent(classId: number) {
 }
 
 export function useRemoveStudent(classId: number) {
-  const invalidate = useInvalidateClasses();
+  const invalidate = useInvalidateRoster();
   return useMutation({
     mutationFn: (userId: number) => api.delete<OkResponse>(`/classes/${classId}/students/${userId}`),
     onSuccess: invalidate,

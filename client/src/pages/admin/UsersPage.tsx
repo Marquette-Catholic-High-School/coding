@@ -1,7 +1,6 @@
 import {
   ActionIcon,
   Avatar,
-  Badge,
   Button,
   Card,
   EmptyState,
@@ -31,7 +30,7 @@ import { useState } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { useDeleteUser, useResetUserPassword, useUsers } from '../../api/users';
 import { useCurrentUser } from '../../auth/AuthProvider';
-import { RoleBadge } from '../../components/badges';
+import { RoleBadge, TabCountBadge, TemporaryPasswordBadge } from '../../components/badges';
 import { notifyError, notifySuccess } from '../../components/notify';
 import { PageHeader } from '../../components/PageHeader';
 import { QueryState } from '../../components/QueryState';
@@ -177,22 +176,14 @@ export function UsersPage() {
                 <Tabs.Tab
                   value="staff"
                   leftSection={<IconChalkboardTeacher size={16} />}
-                  rightSection={
-                    <Badge size="xs" variant="light" circle>
-                      {staff.length}
-                    </Badge>
-                  }
+                  rightSection={<TabCountBadge count={staff.length} />}
                 >
                   Teachers & admins
                 </Tabs.Tab>
                 <Tabs.Tab
                   value="students"
                   leftSection={<IconUsers size={16} />}
-                  rightSection={
-                    <Badge size="xs" variant="light" circle>
-                      {students.length}
-                    </Badge>
-                  }
+                  rightSection={<TabCountBadge count={students.length} />}
                 >
                   Students
                 </Tabs.Tab>
@@ -328,18 +319,20 @@ function UserRow({
         <Group gap="sm" wrap="nowrap">
           <Avatar name={user.name} color="initials" radius="xl" size={32} />
           <div style={{ minWidth: 0 }}>
-            <Text fw={500} size="sm" truncate>
-              {user.name}
-              {isMe && (
-                <Text span size="sm" c="dimmed" fw={400}>
-                  {' '}
-                  (you)
-                </Text>
-              )}
-            </Text>
+            <Group gap={6} wrap="nowrap">
+              <Text fw={500} size="sm" truncate>
+                {user.name}
+                {isMe && (
+                  <Text span size="sm" c="dimmed" fw={400}>
+                    {' '}
+                    (you)
+                  </Text>
+                )}
+              </Text>
+              {user.mustChangePassword && <TemporaryPasswordBadge />}
+            </Group>
             <Text size="xs" c="dimmed" truncate>
               @{user.username}
-              {user.mustChangePassword && ' · temporary password'}
             </Text>
           </div>
         </Group>

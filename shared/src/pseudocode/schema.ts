@@ -4,6 +4,8 @@ import type { PseudocodeConfig } from './types';
 const word = z.string().trim().min(1).max(40);
 
 const keywordSlot = z.array(word).min(1).max(8);
+/** A slot added after configs were first stored: older configs (and older clients) may leave it out. */
+const addedKeywordSlot = (spelling: string) => keywordSlot.default(() => [spelling]);
 
 /** Validates the *shape* of a PseudocodeConfig. Semantic checks (clashing words, etc.) live in `validatePseudocodeConfig`. */
 export const pseudocodeConfigSchema = z.object({
@@ -20,6 +22,7 @@ export const pseudocodeConfigSchema = z.object({
     procedure: keywordSlot, endProcedure: keywordSlot, call: keywordSlot,
     and: keywordSlot, or: keywordSlot, not: keywordSlot, mod: keywordSlot, div: keywordSlot,
     true: keywordSlot, false: keywordSlot,
+    declare: addedKeywordSlot('DECLARE'), constant: addedKeywordSlot('CONSTANT'),
   }),
   constructs: z.object({
     output: z.boolean(), input: z.boolean(), variables: z.boolean(), if: z.boolean(), else: z.boolean(),

@@ -1,8 +1,9 @@
 // HTTP API contract: request-body schemas (zod, used by the server to validate and by client forms) and
 // response shapes. All routes are under /api. Errors are `ApiErrorBody` with a 4xx/5xx status.
 //
-// Auth: session cookie `sid` (httpOnly). Roles: admin ⊇ teacher (admins can do everything teachers can, for
-// every class); students only see classes they are enrolled in.
+// Auth: session cookie `sid` (httpOnly). Signed-in requests also send the readable `cc_csrf` cookie's value in an
+// `x-codeclass-token` header (code runners in Web Workers can't read it). Roles: admin ⊇ teacher (admins can do
+// everything teachers can, for every class); students only see classes they are enrolled in.
 
 import { z } from 'zod';
 import { pseudocodeConfigSchema } from './pseudocode/schema';
@@ -26,6 +27,11 @@ export interface ApiErrorBody {
     message: string;
     /** Field name → message, for 400 validation errors (field names match the request schema keys). */
     fieldErrors?: Record<string, string>;
+    /**
+     * Machine-readable reason, when the client must react to it. `csrf`: the request lacked the session's
+     * `x-codeclass-token` (read from the `cc_csrf` cookie); the response re-sets that cookie and the client retries once.
+     */
+    code?: string;
   };
 }
 
@@ -70,8 +76,8 @@ export type SetupInput = z.input<typeof setupSchema>;
 
 /** POST /api/auth/login — `login` is a username or email. */
 export const loginSchema = z.object({
-  login: z.string().trim().min(1, 'Required'),
-  password: z.string().min(1, 'Required'),
+  login: z.string().trim().min(1, 'Required').max(254, 'At most 254 characters'),
+  password: z.string().min(1, 'Required').max(200, 'At most 200 characters'),
 });
 export type LoginInput = z.input<typeof loginSchema>;
 

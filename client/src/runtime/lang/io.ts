@@ -22,9 +22,9 @@ export interface RunIO {
   write(stream: 'stdout' | 'stderr', text: string): void;
   /**
    * Next line of input without "\n", or null at end of input. Pre-supplied lines come first; after that the call
-   * blocks for a typed line when the run is interactive. With `wait: false` it never asks the user.
+   * blocks for a typed line when the run is interactive (until the user ends the input).
    */
-  readLine(options?: { wait?: boolean }): string | null;
+  readLine(): string | null;
   /** Unfinished stdout line, i.e. the prompt shown before an input request. */
   pendingPrompt(): string;
   /** Send buffered output to the page now. */

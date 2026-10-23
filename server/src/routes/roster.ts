@@ -37,6 +37,7 @@ interface StatSubmissionRow {
   student_id: number;
   status: 'in_progress' | 'submitted' | 'graded';
   submitted_at: string | null;
+  returned_at: string | null;
   grade: number | null;
 }
 
@@ -62,7 +63,7 @@ function rosterStudents(classId: number, onlyStudentId?: number): RosterStudent[
 
   const submissions = db
     .prepare(
-      `SELECT s.assignment_id, s.student_id, s.status, s.submitted_at, s.grade
+      `SELECT s.assignment_id, s.student_id, s.status, s.submitted_at, s.returned_at, s.grade
        FROM submissions s JOIN assignments a ON a.id = s.assignment_id
        WHERE a.class_id = ? ${onlyStudentId === undefined ? '' : 'AND s.student_id = ?'}`,
     )
@@ -88,7 +89,7 @@ function rosterStudents(classId: number, onlyStudentId?: number): RosterStudent[
     for (const a of published) {
       const s = mine.get(a.id);
       const status: SubmissionStatus = s?.status ?? 'not_started';
-      if (isLate(a.due_at, status, s?.submitted_at ?? null, now)) lateCount += 1;
+      if (isLate(a.due_at, status, s?.submitted_at ?? null, s?.returned_at ?? null, now)) lateCount += 1;
     }
     return {
       id: u.id,
@@ -110,14 +111,31 @@ router.get('/classes/:id/students', requireStaff, (req, res) => {
   res.json(body);
 });
 
+/** True when the student is enrolled in a class that `staffId` owns. */
+function teachesStudent(staffId: number, studentId: number): boolean {
+  return !!db
+    .prepare('SELECT 1 FROM enrollments e JOIN classes c ON c.id = e.class_id WHERE e.user_id = ? AND c.owner_id = ? LIMIT 1')
+    .get(studentId, staffId);
+}
+
+/** True when the student is enrolled in a class that someone other than `staffId` owns. */
+function inAnotherTeachersClass(staffId: number, studentId: number): boolean {
+  return !!db
+    .prepare('SELECT 1 FROM enrollments e JOIN classes c ON c.id = e.class_id WHERE e.user_id = ? AND c.owner_id <> ? LIMIT 1')
+    .get(studentId, staffId);
+}
+
 router.post('/classes/:id/students', requireStaff, (req, res) => {
-  const cls = loadClassForStaff(parseId(String(req.params.id)), currentUser(req));
+  const user = currentUser(req);
+  const cls = loadClassForStaff(parseId(String(req.params.id)), user);
   const input = parseBody(addStudentSchema, req.body);
 
   // usernames are COLLATE NOCASE, so this lookup is case-insensitive.
   const existing = db.prepare('SELECT * FROM users WHERE username = ?').get(input.username) as UserRow | undefined;
   let studentId: number;
   let temporaryPassword: string | null = null;
+  // An existing student's email is only shown to staff who already teach them (or admins).
+  let hideEmail = false;
   if (existing) {
     if (existing.role !== 'student') {
       const msg = `@${existing.username} is a staff account — choose a different username`;
@@ -127,6 +145,7 @@ router.post('/classes/:id/students', requireStaff, (req, res) => {
       const msg = `${existing.name} (@${existing.username}) is already in this class`;
       throw conflict(msg, { username: msg });
     }
+    hideEmail = user.role !== 'admin' && !teachesStudent(user.id, existing.id);
     db.prepare('INSERT INTO enrollments (class_id, user_id) VALUES (?, ?)').run(cls.id, existing.id);
     studentId = existing.id;
   } else {
@@ -145,7 +164,7 @@ router.post('/classes/:id/students', requireStaff, (req, res) => {
   }
 
   const [student] = rosterStudents(cls.id, studentId);
-  const body: AddStudentResponse = { student: student!, temporaryPassword };
+  const body: AddStudentResponse = { student: { ...student!, ...(hideEmail ? { email: null } : {}) }, temporaryPassword };
   res.status(201).json(body);
 });
 
@@ -160,13 +179,18 @@ router.delete('/classes/:id/students/:userId', requireStaff, (req, res) => {
 });
 
 router.post('/classes/:id/students/:userId/reset-password', requireStaff, (req, res) => {
-  const cls = loadClassForStaff(parseId(String(req.params.id)), currentUser(req));
+  const user = currentUser(req);
+  const cls = loadClassForStaff(parseId(String(req.params.id)), user);
   const studentId = parseId(String(req.params.userId));
   const student = db
     .prepare('SELECT u.* FROM users u JOIN enrollments e ON e.user_id = u.id WHERE e.class_id = ? AND u.id = ?')
     .get(cls.id, studentId) as UserRow | undefined;
   if (!student) throw notFound("That student isn't in this class");
   if (student.role !== 'student') throw forbidden('You can only reset passwords for students');
+  // One password guards all of a student's classes, so a teacher may only reset it when every class is theirs.
+  if (user.role !== 'admin' && inAnotherTeachersClass(user.id, student.id)) {
+    throw forbidden("This student is also in another teacher's class — ask an admin to reset their password");
+  }
 
   const temporaryPassword = generateTemporaryPassword();
   db.transaction(() => {

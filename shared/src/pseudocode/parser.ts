@@ -16,7 +16,7 @@ const END_OPENER: Partial<Record<PseudoKeyword, PseudoKeyword>> = {
 /** Keywords that can start a line (used for "Did you mean …?" suggestions). */
 const STATEMENT_SLOTS: readonly PseudoKeyword[] = [
   'output', 'input', 'set', 'if', 'elseIf', 'else', 'endIf', 'while', 'endWhile', 'repeat', 'until', 'endRepeat', 'for',
-  'forEach', 'endFor', 'function', 'endFunction', 'return', 'procedure', 'endProcedure', 'call',
+  'forEach', 'endFor', 'function', 'endFunction', 'return', 'procedure', 'endProcedure', 'call', 'declare', 'constant',
 ];
 const COMPARISONS: ReadonlyMap<string, A.BinaryOp> = new Map<string, A.BinaryOp>([
   ['=', '='], ['==', '='], ['≠', '!='], ['!=', '!='], ['<>', '!='], ['<', '<'], ['>', '>'], ['<=', '<='], ['>=', '>='],
@@ -24,6 +24,16 @@ const COMPARISONS: ReadonlyMap<string, A.BinaryOp> = new Map<string, A.BinaryOp>
 ]);
 /** Always-assignment symbols ("=" is assignment only when the teacher chose it, and only at the start of a line). */
 const ARROWS: ReadonlySet<string> = new Set(['←', '<-', ':=']);
+/**
+ * Connector keywords. They only ever follow a name or a finished value (FOR i FROM …, REPEAT 3 TIMES, IF x THEN), and
+ * SET / CALL only start a statement, so where a name is clearly meant (`step ← 2`, `PROCEDURE move(from, to)`) the
+ * word is used as a name instead. This keeps words an exam board never uses (SET, FROM, CALL …) free for names.
+ */
+const CONNECTORS: ReadonlySet<PseudoKeyword> = new Set<PseudoKeyword>(['set', 'to', 'from', 'step', 'times', 'do', 'then', 'call', 'in']);
+/** Keywords followed by the name of a variable they give a value to (for hints and for connector names). */
+const NAMING_SLOTS: ReadonlySet<PseudoKeyword> = new Set<PseudoKeyword>(['set', 'for', 'forEach', 'input', 'declare', 'constant']);
+/** Cambridge parameter passing words: `PROCEDURE Swap(BYREF a : INTEGER, b : INTEGER)` (BYREF lasts until BYVAL). */
+const PASSING = /^(BYREF|BYVAL)$/i;
 
 /** How many values each built-in accepts. RANDOM() with no values gives a decimal from 0 up to 1 (Cambridge style). */
 export const BUILTIN_ARITY: Readonly<Record<PseudoBuiltin, readonly number[]>> = {
@@ -84,6 +94,13 @@ function span(a: Pos, b: Pos): Pos {
   return { line: a.line, col: a.col, endCol: b.line === a.line ? Math.max(a.endCol, b.endCol) : a.endCol };
 }
 
+/** The value a DECLAREd array starts with, from its type: "" for text, FALSE for BOOLEAN, otherwise 0. */
+function typeDefault(type: string): number | string | boolean {
+  const t = type.toUpperCase();
+  if (t === 'STRING' || t === 'CHAR') return '';
+  return t === 'BOOLEAN' ? false : 0;
+}
+
 function describe(t: Token): string {
   switch (t.kind) {
     case 'num':
@@ -129,30 +146,90 @@ class Parser {
 
   private prescan(): void {
     const t = this.toks;
+    let lineStart = 0;
     for (let n = 0; n < t.length; n++) {
       const tok = t[n]!;
       const next = t[n + 1];
+      if (tok.kind === 'nl') {
+        lineStart = n + 1;
+        continue;
+      }
+      const connector = this.connectorNameAt(n, lineStart);
+      if (connector === 'variable') this.assigned.add(tok.text);
+      else if (connector === 'function') this.functionNames.add(tok.text);
       if (tok.kind === 'word') {
         if (next?.kind === 'op' && (ARROWS.has(next.text) || next.text === '=')) this.assigned.add(tok.text);
       } else if (tok.kind === 'kw' && next?.kind === 'word') {
-        if (tok.slot === 'set' || tok.slot === 'for' || tok.slot === 'forEach' || tok.slot === 'input') this.assigned.add(next.text);
-        if (tok.slot === 'function' || tok.slot === 'procedure') {
-          this.functionNames.add(next.text);
-          let depth = 0;
-          for (let j = n + 2; j < t.length; j++) {
-            const p = t[j]!;
-            if (p.kind === 'nl' || p.kind === 'eof') break;
-            if (p.kind === 'op' && (p.text === '(' || p.text === '[')) depth++;
-            else if (p.kind === 'op' && (p.text === ')' || p.text === ']')) {
-              if (--depth <= 0) break;
-            } else if (p.kind === 'word' && depth === 1) {
-              const prev = t[j - 1]!;
-              if (prev.kind === 'op' && (prev.text === '(' || prev.text === ',')) this.assigned.add(p.text);
-            }
-          }
-        }
+        if (NAMING_SLOTS.has(tok.slot!)) this.assigned.add(next.text);
+        if (tok.slot === 'function' || tok.slot === 'procedure') this.functionNames.add(next.text);
+      }
+      if (tok.kind === 'kw' && (tok.slot === 'function' || tok.slot === 'procedure')) this.prescanParameters(n + 2);
+    }
+  }
+
+  /** Parameter names in a FUNCTION / PROCEDURE header starting at token `start` (just after the name). */
+  private prescanParameters(start: number): void {
+    const t = this.toks;
+    let depth = 0;
+    for (let j = start; j < t.length; j++) {
+      const p = t[j]!;
+      if (p.kind === 'nl' || p.kind === 'eof') break;
+      if (p.kind === 'op' && (p.text === '(' || p.text === '[')) depth++;
+      else if (p.kind === 'op' && (p.text === ')' || p.text === ']')) {
+        if (--depth <= 0) break;
+      } else if (p.kind === 'word' && depth === 1 && !PASSING.test(p.text)) {
+        let prev = t[j - 1]!;
+        if (prev.kind === 'word' && PASSING.test(prev.text)) prev = t[j - 2]!;
+        if (prev.kind === 'op' && (prev.text === '(' || prev.text === ',')) this.assigned.add(p.text);
       }
     }
+  }
+
+  /**
+   * Whether the token at `n` is a connector keyword (TO, STEP, …) used as a name: before an assignment symbol, in a
+   * bracketed name list, or where SET, FOR, FOR EACH, INPUT, DECLARE, FUNCTION or PROCEDURE expects a name.
+   */
+  private connectorNameAt(n: number, lineStart: number): 'variable' | 'function' | null {
+    const t = this.toks;
+    const tok = t[n]!;
+    if (tok.kind !== 'kw' || !CONNECTORS.has(tok.slot!) || tok.text.includes(' ')) return null;
+    const next = t[n + 1]!;
+    const op = (x: Token | undefined, ...texts: string[]) => x !== undefined && x.kind === 'op' && texts.includes(x.text);
+    const end = next.kind === 'nl' || next.kind === 'eof';
+    if (next.kind === 'op' && (ARROWS.has(next.text) || next.text === '=')) return 'variable';
+    let prev = n > lineStart ? t[n - 1] : undefined;
+    if (prev?.kind === 'word' && PASSING.test(prev.text)) prev = t[n - 2];
+    if (prev === undefined) return null;
+    if (op(prev, '(', ',') && op(next, ',', ')', ':')) return 'variable';
+    const first = t[lineStart]!;
+    const listLine = first.kind === 'kw' && (first.slot === 'input' || first.slot === 'declare');
+    if (listLine && op(prev, ',') && (end || op(next, ',', '[', ':'))) return 'variable';
+    if (prev.kind !== 'kw') return null;
+    switch (prev.slot) {
+      case 'set':
+        return this.isKw(next, 'to') || op(next, '[') ? 'variable' : null;
+      case 'for':
+        return this.isKw(next, 'from') || this.isKw(next, 'in') ? 'variable' : null;
+      case 'forEach':
+        return this.isKw(next, 'in') ? 'variable' : null;
+      case 'input':
+      case 'declare':
+        return end || op(next, ',', '[', ':') ? 'variable' : null;
+      case 'function':
+      case 'procedure':
+        return end || op(next, '(', '{') ? 'function' : null;
+      default:
+        return null;
+    }
+  }
+
+  /** A connector keyword that this program uses as a name (see CONNECTORS). */
+  private isConnectorName(t: Token): boolean {
+    return t.kind === 'kw' && CONNECTORS.has(t.slot!) && (this.assigned.has(t.text) || this.functionNames.has(t.text));
+  }
+
+  private isName(t: Token): boolean {
+    return t.kind === 'word' || this.isConnectorName(t);
   }
 
   /** Current token; a 'bad' token (lexer problem) is reported as soon as the parser reaches it. */
@@ -296,7 +373,8 @@ class Parser {
         throw this.strayCloser(block, t);
       }
       const s = this.parseStatement();
-      if (s) body.push(s);
+      if (Array.isArray(s)) body.push(...s);
+      else if (s) body.push(s);
     }
   }
 
@@ -392,10 +470,17 @@ class Parser {
   /** THEN / DO are optional and may sit on the next line (Cambridge puts THEN on its own line). */
   private optionalConnector(slot: 'then' | 'do'): void {
     const j = this.afterNewlines();
-    if (this.isKw(this.toks[j]!, slot)) this.i = j + 1;
+    const t = this.toks[j]!;
+    if (this.isKw(t, slot) && !(this.isConnectorName(t) && this.isAssignOp(this.toks[j + 1]!))) this.i = j + 1;
   }
 
-  private parseStatement(): A.Stmt | null {
+  /** "at the start of a line", or "here" when something comes before the token on its line. */
+  private where(t: Token): string {
+    const prev = this.toks[this.i - 1];
+    return prev === undefined || prev.kind === 'nl' || prev.line !== t.line ? 'at the start of a line' : 'here';
+  }
+
+  private parseStatement(): A.Stmt | A.Stmt[] | null {
     const t = this.peek();
     if (t.kind === 'kw') return this.keywordStatement(t);
     if (t.kind === 'word') return this.wordStatement(t);
@@ -408,7 +493,7 @@ class Parser {
       throw this.fail(t, `I expected a variable name before "${t.text}".`, `For example: ${this.lang.assignExample('score', '0')}`);
     }
     if (t.text === '(' || t.text === '[' || t.text === '-') throw this.valueWithoutInstruction(t);
-    throw this.fail(t, `I wasn't expecting ${describe(t)} at the start of a line.`);
+    throw this.fail(t, `I wasn't expecting ${describe(t)} ${this.where(t)}.`);
   }
 
   private valueWithoutInstruction(t: Token): PseudoError {
@@ -424,8 +509,12 @@ class Parser {
     return this.fail(t, `"${t.text}" is a special word in this language, so it can't be used as a name.`, 'Choose a different name.');
   }
 
-  private keywordStatement(t: Token): A.Stmt | null {
+  private keywordStatement(t: Token): A.Stmt | A.Stmt[] | null {
     const after = this.at(1);
+    if (t.slot === 'forEach') this.eachAsLoopVariable(t, after);
+    if (this.isConnectorName(t) && (this.isAssignOp(after) || this.isOp(after, '=') || this.isOp(after, '[') || this.isOp(after, '('))) {
+      return this.wordStatement(t);
+    }
     if (this.isAssignOp(after) || this.isOp(after, '=')) throw this.reservedName(t);
     switch (t.slot) {
       case 'output':
@@ -452,11 +541,26 @@ class Parser {
         return this.returnStatement();
       case 'call':
         return this.callStatement();
+      case 'declare':
+        return this.declareStatement();
+      case 'constant':
+        return this.constantStatement();
       default:
         break;
     }
     if (t.slot === 'not' || t.slot === 'true' || t.slot === 'false') throw this.valueWithoutInstruction(t);
-    throw this.fail(t, `I wasn't expecting "${t.text}" at the start of a line.`, this.connectorHint(t.slot!));
+    throw this.fail(t, `I wasn't expecting "${t.text}" ${this.where(t)}.`, this.misplacedConnectorHint(t) ?? this.connectorHint(t.slot!));
+  }
+
+  /** THEN / DO after the header of a block that doesn't use it: `FOR i FROM 1 TO 3 DO`, `WHILE x THEN`. */
+  private misplacedConnectorHint(t: Token): string | undefined {
+    const k = this.k;
+    const top = this.stack[this.stack.length - 1];
+    if (!top || top.pos.line !== t.line || (t.slot !== 'do' && t.slot !== 'then')) return undefined;
+    if (top.name === (t.slot === 'do' ? k.while : k.if)) return undefined;
+    if (t.slot === 'do' && top.name === k.if && this.lang.keywordOn('then')) return `Use ${k.then} after ${this.an(k.if)} condition instead.`;
+    if (t.slot === 'then' && top.name === k.while && this.lang.keywordOn('do')) return `Use ${k.do} after ${this.an(k.while)} condition instead.`;
+    return `${top.name} lines don't use ${t.text} — remove it.`;
   }
 
   private connectorHint(slot: PseudoKeyword): string | undefined {
@@ -522,7 +626,7 @@ class Parser {
     if (this.isOp(this.peek(), '(')) {
       // INPUT(name) reads into name; INPUT() or INPUT("Press enter") just waits for a line.
       const a = this.at(1);
-      if (a.kind === 'word' && this.isOp(this.at(2), ')') && this.atEnd(this.at(3))) {
+      if (this.isName(a) && this.isOp(this.at(2), ')') && this.atEnd(this.at(3))) {
         this.i += 3;
         this.endStatement('input');
         return { k: 'inputStmt', ...posOf(t), prompt: null, targets: [{ k: 'var', ...posOf(a), name: a.text }] };
@@ -566,22 +670,29 @@ class Parser {
 
   private parseTarget(): A.Target {
     const t = this.peek();
-    if (t.kind === 'kw') throw this.reservedName(t);
-    if (t.kind !== 'word') throw this.fail(t, `I expected a variable name here, but found ${describe(t)}.`);
+    if (t.kind === 'kw' && !this.isConnectorName(t)) throw this.reservedName(t);
+    if (!this.isName(t)) throw this.fail(t, `I expected a variable name here, but found ${describe(t)}.`);
     this.next();
     let target: A.Target = { k: 'var', ...posOf(t), name: t.text };
     while (this.isOp(this.peek(), '[')) target = this.indexSuffix(target);
     return target;
   }
 
+  /** `[i]`, or `[r, c]` for `[r][c]` (Cambridge 2-D arrays). */
   private indexSuffix(target: A.Expr): A.IndexExpr {
     const open = this.next();
     this.requireTopic('lists', open);
-    const index = this.parseExpr();
+    const indexes = [this.parseExpr()];
+    while (this.isOp(this.peek(), ',')) {
+      this.next();
+      indexes.push(this.parseExpr());
+    }
     const close = this.peek();
     if (!this.isOp(close, ']')) throw this.unclosedBracket(open, close);
     this.next();
-    return { k: 'index', ...span(target, close), target, index };
+    let e = target;
+    for (const index of indexes) e = { k: 'index', ...span(target, close), target: e, index };
+    return e as A.IndexExpr;
   }
 
   private setStatement(): A.AssignStmt {
@@ -709,7 +820,7 @@ class Parser {
 
   private expectName(message: string): Token {
     const t = this.peek();
-    if (t.kind === 'word') return this.next();
+    if (this.isName(t)) return this.next();
     if (t.kind === 'kw') throw this.reservedName(t);
     throw this.fail(t, message);
   }
@@ -759,6 +870,18 @@ class Parser {
     return this.finishForEach(t, name);
   }
 
+  /** `FOR each FROM 1 TO 3`: "FOR each" was read as FOR EACH, so the counting loop has lost its variable. */
+  private eachAsLoopVariable(t: Token, next: Token): void {
+    const words = t.text.split(' ');
+    const counting = this.isKw(next, 'from') || (next.kind === 'op' && (ARROWS.has(next.text) || next.text === '='));
+    if (words.length < 2 || !counting) return;
+    throw this.fail(
+      t,
+      `"${t.text}" is read as ${this.k.forEach}, so "${words[words.length - 1]}" can't be the name of the loop variable.`,
+      `Choose a different name, for example: ${this.forExample()}`,
+    );
+  }
+
   private finishForEach(t: Token, name: Token): A.ForEachStmt {
     const k = this.k;
     const list = this.parseExpr();
@@ -776,7 +899,7 @@ class Parser {
   /** `END FOR i` / `NEXT i`: the optional name must be the loop variable. */
   private loopNameAfterEnd(name: string): void {
     const t = this.peek();
-    if (t.kind !== 'word' || t.line !== this.toks[this.i - 1]!.line) return;
+    if ((t.kind !== 'word' && !(t.kind === 'kw' && t.text === name)) || t.line !== this.toks[this.i - 1]!.line) return;
     this.next();
     if (t.text !== name) {
       throw this.fail(t, `This ${this.k.endFor} names "${t.text}", but the loop variable is "${name}".`, `Write ${this.k.endFor} ${name}`);
@@ -800,14 +923,22 @@ class Parser {
       throw this.fail(name, `There's already ${this.an(kind)} called "${name.text}" (on line ${existing.line}).`, 'Give each one a different name.');
     }
     const params: string[] = [];
+    const byRef: boolean[] = [];
+    let ref = false;
     if (this.isOp(this.peek(), '(')) {
       const open = this.next();
       this.skipNewlines();
       if (!this.isOp(this.peek(), ')')) {
         for (;;) {
+          const passing = this.peek();
+          if (passing.kind === 'word' && PASSING.test(passing.text) && (this.at(1).kind === 'word' || this.at(1).kind === 'kw')) {
+            ref = passing.text.toUpperCase() === 'BYREF';
+            this.next();
+          }
           const p = this.expectName('I expected the name of a parameter here.');
           if (params.includes(p.text)) throw this.fail(p, `"${p.text}" is used twice in the brackets.`, 'Give each parameter a different name.');
           params.push(p.text);
+          byRef.push(ref);
           this.skipTypeAnnotation();
           this.skipNewlines();
           const sep = this.peek();
@@ -824,7 +955,7 @@ class Parser {
       this.next(); // )
     }
     this.skipReturnType();
-    const def: A.FuncDef = { ...posOf(name), name: name.text, params, body: [], isProcedure, returnsValue: false };
+    const def: A.FuncDef = { ...posOf(name), name: name.text, params, byRef, body: [], isProcedure, returnsValue: false };
     this.functions.set(name.text, def);
     const block = this.openBlock(t, word, [isProcedure ? 'endProcedure' : 'endFunction'], isProcedure ? k.endProcedure : k.endFunction, `${word} greet(name)`);
     const saved = this.func;
@@ -873,12 +1004,98 @@ class Parser {
     return { k: 'return', ...posOf(t), value };
   }
 
+  /**
+   * `DECLARE total : INTEGER` names a variable (nothing to run). `DECLARE marks : ARRAY[1:5] OF INTEGER` stores a list
+   * of 5 zeros ("" for STRING / CHAR, FALSE for BOOLEAN); `ARRAY[1:3, 1:4]` makes a list of 3 lists of 4.
+   */
+  private declareStatement(): A.AssignStmt[] | null {
+    const t = this.next();
+    const k = this.k;
+    this.requireKeyword('declare', t);
+    const example = `${k.declare} total : INTEGER`;
+    const names = [this.expectName(`${k.declare} needs a variable name next, for example: ${example}`)];
+    while (this.isOp(this.peek(), ',')) {
+      this.next();
+      names.push(this.expectName(`I expected another variable name after the comma, for example: ${k.declare} a, b : INTEGER`));
+    }
+    let list: A.NewArrayExpr | null = null;
+    const colon = this.peek();
+    if (this.isOp(colon, ':')) {
+      this.next();
+      list = this.declaredType();
+    } else if (colon.kind === 'op' && (ARROWS.has(colon.text) || colon.text === '=')) {
+      throw this.fail(
+        colon,
+        `${k.declare} only names a variable — give it a value on its own line.`,
+        `For example: ${example}, then ${this.lang.assignExample('total', '0')}`,
+      );
+    }
+    this.endStatement();
+    if (!list) return null;
+    const value = list;
+    return names.map((name) => ({ k: 'assign', ...posOf(t), target: { k: 'var', ...posOf(name), name: name.text }, value }));
+  }
+
+  /** The type after the colon of a DECLARE: null for a plain type (INTEGER, STRING …), or the list an ARRAY makes. */
+  private declaredType(): A.NewArrayExpr | null {
+    const k = this.k;
+    const example = `${k.declare} marks : ARRAY[1:5] OF INTEGER`;
+    const type = this.peek();
+    if (type.kind !== 'word') throw this.fail(type, 'Put a type after the colon, like INTEGER or STRING.', `For example: ${k.declare} total : INTEGER`);
+    this.next();
+    if (type.text.toUpperCase() !== 'ARRAY') return null;
+    const open = this.peek();
+    if (!this.isOp(open, '[')) throw this.fail(open, 'ARRAY needs its first and last positions in [ ].', `For example: ${example}`);
+    this.next();
+    this.requireTopic('lists', open);
+    const bounds: A.NewArrayExpr['bounds'] = [];
+    for (;;) {
+      const low = this.parseExpr();
+      if (!this.isOp(this.peek(), ':')) throw this.fail(this.peek(), 'Put a colon between the first and last positions, like ARRAY[1:5].');
+      this.next();
+      bounds.push({ low, high: this.parseExpr() });
+      if (!this.isOp(this.peek(), ',')) break;
+      this.next();
+    }
+    const close = this.peek();
+    if (!this.isOp(close, ']')) throw this.unclosedBracket(open, close);
+    this.next();
+    let fill: number | string | boolean = 0;
+    const of = this.peek();
+    if (of.kind === 'word' && of.text.toUpperCase() === 'OF') {
+      this.next();
+      const item = this.peek();
+      if (item.kind !== 'word') throw this.fail(item, 'Put the type of the items after OF.', `For example: ${example}`);
+      this.next();
+      fill = typeDefault(item.text);
+    }
+    return { k: 'newArray', ...span(type, this.toks[this.i - 1]!), bounds, fill };
+  }
+
+  /** `CONSTANT PI ← 3.14` or `CONSTANT PI = 3.14`: an ordinary assignment. */
+  private constantStatement(): A.AssignStmt {
+    const t = this.next();
+    const k = this.k;
+    this.requireKeyword('constant', t);
+    const example = `${k.constant} PI ${this.lang.assign ?? '='} 3.14`;
+    const name = this.expectName(`${k.constant} needs a name next, for example: ${example}`);
+    const op = this.peek();
+    if (!this.isOp(op, '=') && !(op.kind === 'op' && this.lang.assignOps.has(op.text))) {
+      if (op.kind === 'op' && ARROWS.has(op.text)) throw this.fail(op, `This language doesn't use "${op.text}" to store values.`, `Write ${example}`);
+      throw this.fail(op, `${k.constant} needs ${this.lang.assign ?? '='} and a value after the name.`, `For example: ${example}`);
+    }
+    this.next();
+    const value = this.parseExpr();
+    this.endStatement();
+    return { k: 'assign', ...posOf(t), target: { k: 'var', ...posOf(name), name: name.text }, value };
+  }
+
   private callStatement(): A.CallStmt {
     const t = this.next();
     const k = this.k;
     this.requireKeyword('call', t);
     const name = this.peek();
-    if (name.kind !== 'word') {
+    if (!this.isName(name)) {
       throw this.fail(name, `${k.call} needs the name of ${this.subroutineWords()} next.`, `For example: ${k.call} greet("Sam")`);
     }
     this.next();
@@ -941,22 +1158,47 @@ class Parser {
         `To change it, write ${this.lang.assignExample(word, '…')} — to show it, write ${this.outputExample(word)}.`,
       );
     }
+    const caseSensitive = this.lang.config.caseSensitive;
+    const capitals = (spelling: string) => `Did you mean "${spelling}"? Capital letters matter in this language.`;
     const firsts = this.lang.firstWords.get(this.lang.norm(word));
     if (firsts) {
+      // `END If` in a case-sensitive language: the second word only differs in capitals.
+      const typed = `${word} ${after.text}`;
+      const pair = caseSensitive && this.nextWordOnLine(t, after) ? this.lang.spellingsByUpper.get(typed.toUpperCase()) : undefined;
+      if (pair) return this.fail(span(t, after), `I don't know the words "${typed}".`, capitals(pair));
       let suggestion = k[firsts[0]!];
       const top = this.stack[this.stack.length - 1];
       if (top && !top.braces && this.lang.norm(top.closerText.split(' ')[0]!) === this.lang.norm(word)) suggestion = top.closerText;
       return this.fail(t, `"${word}" needs another word after it.`, `Did you mean "${suggestion}"?`);
     }
     const message = `I don't know the word "${word}".`;
-    if (this.lang.config.caseSensitive) {
-      const spelling = this.lang.spellingsByUpper.get(word.toUpperCase());
-      if (spelling) return this.fail(t, message, `Did you mean "${spelling}"? Capital letters matter in this language.`);
+    if (caseSensitive) {
+      const spelling = this.sameButForCase(t, after);
+      if (spelling) return this.fail(t, message, capitals(spelling));
     }
     const foreign = this.foreignHint(word);
     if (foreign) return this.fail(t, message, foreign);
     const suggestion = this.suggestStatementWord(word);
     return this.fail(t, message, suggestion ? `Did you mean "${suggestion}"?` : undefined);
+  }
+
+  private nextWordOnLine(t: Token, after: Token): boolean {
+    return (after.kind === 'word' || after.kind === 'kw') && after.line === t.line;
+  }
+
+  /** Case-sensitive languages: the keyword meant by a word in the wrong capitals (`Else`, `End IF`, `end if`). */
+  private sameButForCase(t: Token, after: Token): string | undefined {
+    const upper = t.text.toUpperCase();
+    const byUpper = this.lang.spellingsByUpper;
+    const nextWord = this.nextWordOnLine(t, after) ? after.text.split(' ')[0]!.toUpperCase() : null;
+    const pair = nextWord ? byUpper.get(`${upper} ${nextWord}`) : undefined;
+    if (pair) return pair;
+    const single = byUpper.get(upper);
+    if (single) return single;
+    const multi = this.lang.multiWordByFirstUpper.get(upper);
+    if (!multi) return undefined;
+    const top = this.stack[this.stack.length - 1];
+    return multi.find((s) => top !== undefined && !top.braces && s === top.closerText) ?? multi[0];
   }
 
   private foreignHint(word: string): string | undefined {
@@ -969,8 +1211,15 @@ class Parser {
         return `To show something on the screen, use ${k.output}.`;
       case 'input':
         return `To ask the user to type something, use ${k.input}.`;
-      case 'declare':
+      case 'declare': {
+        // `DIM marks : ARRAY[1:3] OF INTEGER` / `VAR marks : ARRAY …`: a list needs its starting items.
+        const name = this.at(1);
+        const type = this.at(3);
+        if (name.kind === 'word' && this.isOp(this.at(2), ':') && type.kind === 'word' && type.text.toUpperCase() === 'ARRAY') {
+          return `To make a list, give it its starting items, like ${this.lang.assignExample(name.text, '[0, 0, 0]')}`;
+        }
         return `You don't need to declare variables here — just give them a value, like ${this.lang.assignExample('total', '0')}`;
+      }
       case 'next':
         return `Finish ${this.an(k.for)} loop with ${k.endFor}.`;
       case 'loop': {
@@ -1163,16 +1412,11 @@ class Parser {
       case 'str':
         this.next();
         return { k: 'str', ...posOf(t), value: t.value as string };
-      case 'word': {
-        this.next();
-        if (this.isOp(this.peek(), '(')) {
-          const args = this.parseArgs();
-          return this.makeCall(t, args, this.toks[this.i - 1]!);
-        }
-        return { k: 'var', ...posOf(t), name: t.text };
-      }
       case 'kw':
-        return this.keywordValue(t);
+        if (!this.isConnectorName(t)) return this.keywordValue(t);
+        return this.nameValue(t);
+      case 'word':
+        return this.nameValue(t);
       case 'op':
         if (t.text === '(') {
           this.next();
@@ -1188,6 +1432,16 @@ class Parser {
         break;
     }
     throw this.expectedValue(t);
+  }
+
+  /** A variable, or a call when brackets follow the name. */
+  private nameValue(t: Token): A.Expr {
+    this.next();
+    if (this.isOp(this.peek(), '(')) {
+      const args = this.parseArgs();
+      return this.makeCall(t, args, this.toks[this.i - 1]!);
+    }
+    return { k: 'var', ...posOf(t), name: t.text };
   }
 
   private keywordValue(t: Token): A.Expr {
@@ -1406,6 +1660,12 @@ function resolveProgram(program: A.Program, lang: Language, assigned: ReadonlySe
         break;
       case 'call':
         visitCall(e, true);
+        break;
+      case 'newArray':
+        for (const b of e.bounds) {
+          visitExpr(b.low);
+          visitExpr(b.high);
+        }
         break;
       default:
         break;

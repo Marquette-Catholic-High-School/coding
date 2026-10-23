@@ -7,6 +7,8 @@ export class HttpError extends Error {
     public status: number,
     message: string,
     public fieldErrors?: Record<string, string>,
+    /** Machine-readable reason sent as `error.code` (see ApiErrorBody). */
+    public code?: string,
   ) {
     super(message);
   }
@@ -40,7 +42,13 @@ export function parseId(value: string | string[] | undefined): number {
 
 export const errorHandler: ErrorRequestHandler = (err, _req, res, _next) => {
   if (err instanceof HttpError) {
-    const body: ApiErrorBody = { error: { message: err.message, ...(err.fieldErrors ? { fieldErrors: err.fieldErrors } : {}) } };
+    const body: ApiErrorBody = {
+      error: {
+        message: err.message,
+        ...(err.fieldErrors ? { fieldErrors: err.fieldErrors } : {}),
+        ...(err.code ? { code: err.code } : {}),
+      },
+    };
     res.status(err.status).json(body);
     return;
   }
@@ -51,6 +59,13 @@ export const errorHandler: ErrorRequestHandler = (err, _req, res, _next) => {
   }
   if (err?.type === 'entity.too.large') {
     res.status(413).json({ error: { message: 'That is too large to save' } } satisfies ApiErrorBody);
+    return;
+  }
+  // Other client errors that Express or body-parser already tagged with a 4xx status (a malformed percent-encoded
+  // route param, an unsupported charset or Content-Encoding, an aborted upload): bad input, not a server fault.
+  const status = typeof err?.status === 'number' ? err.status : typeof err?.statusCode === 'number' ? err.statusCode : undefined;
+  if (status !== undefined && status >= 400 && status < 500) {
+    res.status(status).json({ error: { message: status === 415 ? 'Unsupported request format' : 'Bad request' } } satisfies ApiErrorBody);
     return;
   }
   console.error(err);

@@ -1,6 +1,7 @@
 import type { TestCase } from '@codeclass/shared';
 import { describe, expect, it } from 'vitest';
-import { formatDuration, loadingMessage, mergeChunks, summarizeTests, testName } from './ideUtils';
+import type { OutputChunk } from '../runtime';
+import { consoleInputKey, formatDuration, loadingMessage, nextFitLevel, summarizeTests, tailSegments, testName, testsBadgeColor } from './ideUtils';
 
 const test = (id: string, name = ''): TestCase => ({ id, name, input: '', expectedOutput: '', hidden: false, points: 1 });
 
@@ -13,18 +14,54 @@ describe('ideUtils', () => {
 
   it('merges consecutive chunks of the same stream', () => {
     expect(
-      mergeChunks([
-        { stream: 'stdout', text: 'Name? ' },
-        { stream: 'stdin', text: 'Sam\n' },
-        { stream: 'stdout', text: 'Hi ' },
-        { stream: 'stdout', text: 'Sam\n' },
-        { stream: 'stderr', text: '' },
-      ]),
-    ).toEqual([
-      { stream: 'stdout', text: 'Name? ' },
-      { stream: 'stdin', text: 'Sam\n' },
-      { stream: 'stdout', text: 'Hi Sam\n' },
-    ]);
+      tailSegments(
+        [
+          { stream: 'stdout', text: 'Name? ' },
+          { stream: 'stdin', text: 'Sam\n' },
+          { stream: 'stdout', text: 'Hi ' },
+          { stream: 'stdout', text: 'Sam\n' },
+          { stream: 'stderr', text: '' },
+        ],
+        100,
+      ),
+    ).toEqual({
+      segments: [
+        { stream: 'stdout', text: 'Name? ', key: 0 },
+        { stream: 'stdin', text: 'Sam\n', key: 1 },
+        { stream: 'stdout', text: 'Hi Sam\n', key: 2 },
+      ],
+      hidden: false,
+    });
+  });
+
+  it('keeps only the last segments of a long transcript, with stable keys', () => {
+    const output: OutputChunk[] = [];
+    for (let i = 0; i < 100_000; i++) output.push({ stream: i % 2 ? 'stderr' : 'stdout', text: `${i}\n` });
+    const started = performance.now();
+    const { segments, hidden } = tailSegments(output, 2000);
+    expect(performance.now() - started).toBeLessThan(100);
+    expect(hidden).toBe(true);
+    expect(segments).toHaveLength(2000);
+    expect(segments[0]).toEqual({ stream: 'stdout', text: '98000\n', key: 98_000 });
+    expect(segments[1999]).toEqual({ stream: 'stderr', text: '99999\n', key: 99_999 });
+
+    // A segment at the edge of the window is never cut in half.
+    const edge = tailSegments(
+      [
+        { stream: 'stdout', text: 'a' },
+        { stream: 'stdout', text: 'b' },
+        { stream: 'stderr', text: 'c' },
+      ],
+      2,
+    );
+    expect(edge).toEqual({
+      segments: [
+        { stream: 'stdout', text: 'ab', key: 0 },
+        { stream: 'stderr', text: 'c', key: 2 },
+      ],
+      hidden: false,
+    });
+    expect(tailSegments(edge.segments, 1)).toEqual({ segments: [{ stream: 'stderr', text: 'c', key: 1 }], hidden: true });
   });
 
   it('describes runtime downloads from the language catalog', () => {
@@ -44,5 +81,40 @@ describe('ideUtils', () => {
         { testId: 'b', passed: false, actualOutput: '', error: null, durationMs: 1 },
       ]),
     ).toEqual({ passed: 1, total: 3, ran: 2 });
+  });
+
+  it('colors the Tests badge only once results are complete or a test failed', () => {
+    expect(testsBadgeColor(null)).toBe('gray');
+    expect(testsBadgeColor({ passed: 3, total: 3, ran: 3 })).toBe('teal');
+    expect(testsBadgeColor({ passed: 1, total: 3, ran: 2 })).toBe('red');
+    // Stopped part-way with no failures so far: not a pass yet.
+    expect(testsBadgeColor({ passed: 1, total: 3, ran: 1 })).toBe('gray');
+  });
+
+  it('fits a row by stepping to more compact levels and back', () => {
+    const natural: (number | undefined)[] = [];
+    // Overflowing at level 0 → level 1 (the caller remembers that level 0 needed 700px).
+    expect(nextFitLevel(0, 2, 600, 700, natural)).toBe(1);
+    natural[0] = 700;
+    // Fits at level 1, but not enough room for level 0 yet.
+    expect(nextFitLevel(1, 2, 600, 560, natural)).toBe(1);
+    expect(nextFitLevel(1, 2, 690, 560, natural)).toBe(1);
+    // Room again → back to level 0.
+    expect(nextFitLevel(1, 2, 700, 560, natural)).toBe(0);
+    // The last level never steps further, however narrow.
+    expect(nextFitLevel(2, 2, 100, 400, natural)).toBe(2);
+    expect(nextFitLevel(0, 2, 700, 700, natural)).toBe(0);
+  });
+
+  it('sends a line on Enter and ends input on Ctrl+D', () => {
+    const key = (k: string, mods: Partial<Record<'ctrlKey' | 'metaKey' | 'altKey' | 'shiftKey' | 'isComposing', boolean>> = {}) =>
+      consoleInputKey({ key: k, ctrlKey: false, metaKey: false, altKey: false, shiftKey: false, isComposing: false, ...mods });
+    expect(key('Enter')).toBe('submit');
+    expect(key('Enter', { isComposing: true })).toBeNull();
+    expect(key('d', { ctrlKey: true })).toBe('end');
+    expect(key('D', { ctrlKey: true })).toBe('end');
+    expect(key('d')).toBeNull();
+    expect(key('d', { metaKey: true })).toBeNull();
+    expect(key('d', { ctrlKey: true, shiftKey: true })).toBeNull();
   });
 });

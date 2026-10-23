@@ -1,27 +1,12 @@
-// Small pieces shared by the languages pages: status badge, usage/owner text and the uninstall danger zone.
+// Small pieces shared by the languages pages: usage/owner text and the uninstall danger zone.
 
-import { Badge, Button, Card, Group, Text, Title, Tooltip } from '@mantine/core';
+import { Button, Card, Group, Text, Title, Tooltip } from '@mantine/core';
 import { modals } from '@mantine/modals';
 import type { Language } from '@codeclass/shared';
-import { IconCircleOff, IconTrash } from '@tabler/icons-react';
+import { IconTrash } from '@tabler/icons-react';
 import { useUninstallLanguage } from '../../api/languages';
-import { BADGE_NO_SHRINK } from '../../components/badges';
 import { notifyError, notifySuccess } from '../../components/notify';
 import classes from './builder.module.css';
-
-export function DisabledBadge() {
-  return (
-    <Tooltip
-      multiline
-      maw={300}
-      label="Switched off: it can't be chosen for new classes, assignments or projects. Existing assignments keep working."
-    >
-      <Badge variant="light" color="gray" leftSection={<IconCircleOff size={12} />} {...BADGE_NO_SHRINK}>
-        Disabled
-      </Badge>
-    </Tooltip>
-  );
-}
 
 export function usageLabel(count: number): string {
   if (count === 0) return 'Not used by any assignments';

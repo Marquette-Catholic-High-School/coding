@@ -19,6 +19,7 @@ const doubler: StartRun = (_target, _code, options?: RunOptions) => ({
   done: Promise.resolve(outcome({ stdout: `${Number(options?.stdin?.[0] ?? 0) * 2}\n` })),
   stop() {},
   provideInput() {},
+  endInput() {},
 });
 
 describe('runTestsWith', () => {
@@ -58,6 +59,7 @@ describe('runTestsWith', () => {
           resolve(outcome({ status: 'stopped' }));
         },
         provideInput() {},
+        endInput() {},
       };
     };
     const pending = runTestsWith(start, target, 'code', [test('a', '', ''), test('b', '', '')], {

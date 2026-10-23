@@ -22,13 +22,12 @@ import { IconAlertTriangle, IconClockExclamation, IconDots, IconKey, IconUserMin
 import { useState } from 'react';
 import { useRemoveStudent, useResetStudentPassword, useRoster } from '../../api/classes';
 import { CopyIconButton } from '../../components/CopyIconButton';
-import { CodeChip, CountBadge, ScoreText } from '../../components/badges';
+import { CodeChip, CountBadge, ScoreText, TemporaryPasswordBadge } from '../../components/badges';
 import { notifySuccess } from '../../components/notify';
 import { QueryState } from '../../components/QueryState';
 import { RelativeTime } from '../../components/RelativeTime';
 import { TemporaryPasswordModal } from '../../components/TemporaryPasswordModal';
 import { AddStudentModal } from './AddStudentModal';
-import { TemporaryPasswordBadge } from './classBadges';
 import { confirmAction } from './confirmAction';
 
 type Credentials = { name: string; username: string; password: string };

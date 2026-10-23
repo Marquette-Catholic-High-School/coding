@@ -1,11 +1,13 @@
-// Code-runner worker. One worker serves one language kind and is reused between runs (index.ts terminates it on
-// Stop/timeout). Language runtimes are imported on first use, so Pyodide, sql.js and wasmoon load only when needed.
+// Code-runner worker. One worker serves one language kind and may be reused between runs (index.ts terminates it on
+// Stop/timeout, and after every JavaScript/TypeScript run). Language runtimes are imported on first use, so
+// Pyodide, sql.js and wasmoon load only when needed.
 
 import type { LanguageKind } from '@codeclass/shared';
 import { readInputLine, resetInputChannel } from './channel';
 import { describeError, failure, type LangResult, type LanguageRunner, type RunIO } from './lang/io';
 import type { ReplayState } from './lang/pseudocode';
 import { OutputBuffer } from './output';
+import { OutputTailWriter } from './outputTail';
 import type { MainToWorker, RunRequest, WorkerToMain } from './protocol';
 
 interface WorkerScope {
@@ -72,7 +74,7 @@ async function getRunner(kind: LanguageKind, onLoading: () => void): Promise<Lan
 }
 
 /** Pseudocode run waiting for typed input in 'replay' mode. */
-let pendingReplay: { id: number; state: ReplayState; attempt: () => void } | null = null;
+let pendingReplay: { id: number; state: ReplayState; out: OutputBuffer; attempt: () => void } | null = null;
 
 function finish(id: number, out: OutputBuffer, result: LangResult): void {
   out.flush();
@@ -82,22 +84,31 @@ function finish(id: number, out: OutputBuffer, result: LangResult): void {
 async function handleRun(request: RunRequest): Promise<void> {
   const { id } = request;
   pendingReplay = null;
-  const out = new OutputBuffer({ send: (chunks) => post({ type: 'output', id, chunks }) });
+  const out = new OutputBuffer({
+    send: (chunks, batch) => post({ type: 'output', id, batch, chunks }),
+    tail: request.tail ? new OutputTailWriter(request.tail) : null,
+  });
   const stdin = [...request.stdin];
   const channel = request.inputMode === 'channel' ? request.channel : null;
+  // Once the user ends the input, every later read gets end-of-file too (as with a closed pipe).
+  let inputEnded = false;
   const io: RunIO = {
     write: (stream, text) => out.write(stream, text),
-    readLine: (options) => {
+    readLine: () => {
       const given = stdin.shift();
       if (given !== undefined) {
         out.echoInput(given);
         return given;
       }
-      if (!channel || options?.wait === false) return null;
+      if (!channel || inputEnded) return null;
       out.flush();
       resetInputChannel(channel);
       post({ type: 'input-request', id, prompt: out.pendingPrompt || null });
-      return readInputLine(channel);
+      const line = readInputLine(channel);
+      // The page echoes the answer itself, so the prompt must not carry over into the next request.
+      out.markInputConsumed();
+      if (line === null) inputEnded = true;
+      return line;
     },
     pendingPrompt: () => out.pendingPrompt,
     flush: () => out.flush(),
@@ -128,6 +139,7 @@ async function handleRun(request: RunRequest): Promise<void> {
       config: request.pseudocode,
       stdin: request.stdin,
       typed: [],
+      ended: false,
       seed: (Math.random() * 2 ** 32) >>> 0,
       shown: 0,
     };
@@ -139,7 +151,7 @@ async function handleRun(request: RunRequest): Promise<void> {
         return;
       }
       out.flush();
-      pendingReplay = { id, state, attempt };
+      pendingReplay = { id, state, out, attempt };
       post({ type: 'input-request', id, prompt: out.pendingPrompt || null });
     };
     attempt();
@@ -169,7 +181,9 @@ scope.addEventListener('message', (event) => {
     case 'input': {
       const replay = pendingReplay;
       if (!replay || replay.id !== message.id) return;
-      replay.state.typed.push(message.line);
+      if (message.line === null) replay.state.ended = true;
+      else replay.state.typed.push(message.line);
+      replay.out.markInputConsumed();
       replay.attempt();
       break;
     }

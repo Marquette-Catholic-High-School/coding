@@ -97,12 +97,12 @@ router.get('/classes/:id/assignments', requireAuth, (req, res) => {
     // Submissions of currently enrolled students, grouped by assignment.
     const subs = db
       .prepare(
-        `SELECT s.assignment_id, s.student_id, s.status, s.submitted_at FROM submissions s
+        `SELECT s.assignment_id, s.student_id, s.status, s.submitted_at, s.returned_at FROM submissions s
          JOIN assignments a ON a.id = s.assignment_id
          JOIN enrollments e ON e.class_id = a.class_id AND e.user_id = s.student_id
          WHERE a.class_id = ?`,
       )
-      .all(cls.id) as Pick<SubmissionDbRow, 'assignment_id' | 'student_id' | 'status' | 'submitted_at'>[];
+      .all(cls.id) as Pick<SubmissionDbRow, 'assignment_id' | 'student_id' | 'status' | 'submitted_at' | 'returned_at'>[];
     const byAssignment = new Map<number, Map<number, (typeof subs)[number]>>();
     for (const s of subs) {
       let m = byAssignment.get(s.assignment_id);
@@ -121,7 +121,7 @@ router.get('/classes/:id/assignments', requireAuth, (req, res) => {
         if (status === 'submitted' || status === 'graded') submittedCount += 1;
         if (status === 'graded') gradedCount += 1;
         // Students can't see drafts, so nobody is late for one (matches the roster/dashboard counts).
-        if (a.published === 1 && isLate(a.due_at, status, s?.submitted_at ?? null, now)) lateCount += 1;
+        if (a.published === 1 && isLate(a.due_at, status, s?.submitted_at ?? null, s?.returned_at ?? null, now)) lateCount += 1;
       }
       return {
         ...listBase(a),
@@ -227,6 +227,17 @@ router.patch('/assignments/:id', requireStaff, (req, res) => {
   }
   const tests = sent('tests') ? parsed.tests! : parseTests(assignment);
   validateTests(kind, tests);
+  if (sent('points')) {
+    // Grades must stay within 0..points; existing grades are never rescaled.
+    const maxGrade = db
+      .prepare('SELECT MAX(grade) FROM submissions WHERE assignment_id = ? AND grade IS NOT NULL')
+      .pluck()
+      .get(assignment.id) as number | null;
+    if (maxGrade != null && maxGrade > parsed.points!) {
+      const msg = `Some students already have grades up to ${maxGrade}. Lower those grades first, or keep at least ${maxGrade} points.`;
+      throw badRequest(msg, { points: msg });
+    }
+  }
 
   const sets: string[] = [];
   const values: unknown[] = [];

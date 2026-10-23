@@ -1,8 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import cookieParser from 'cookie-parser';
-import express, { type RequestHandler } from 'express';
-import { loadUser } from './auth';
+import express, { type Request, type RequestHandler, type Response } from 'express';
+import { PYODIDE_INDEX_URL } from '@codeclass/shared';
+import { hasCsrfToken, loadUser } from './auth';
 import { config } from './config';
 import { errorHandler, HttpError, notFound } from './http';
 import { router as adminUsersRouter } from './routes/adminUsers';
@@ -29,13 +30,49 @@ const isolationHeaders: RequestHandler = (_req, res, next) => {
   next();
 };
 
-/** CSRF defence in depth (cookies are also SameSite=Lax): state-changing API calls must carry our header. */
-const requireApiHeader: RequestHandler = (req, _res, next) => {
+/** Endpoints a signed-out visitor uses (setup, sign-in, registration, join preview): no anti-CSRF token needed. */
+function isSignedOutEndpoint(req: Request): boolean {
+  if (req.method === 'GET' || req.method === 'HEAD') return req.path === '/setup' || /^\/join\/[^/]+$/.test(req.path);
+  return req.method === 'POST' && (req.path === '/setup' || req.path === '/auth/login' || req.path === '/auth/register');
+}
+
+/**
+ * CSRF defence (cookies are also SameSite=Lax). State-changing API calls must carry `x-codeclass: 1`. Every call made
+ * with a valid session, GET included, must also echo the session's anti-CSRF token in `x-codeclass-token`. Student code
+ * that a teacher runs (Autograde, Run on the grading page, preview) executes in a Web Worker on our origin, whose
+ * requests carry the teacher's session cookie; workers can't read the `cc_csrf` cookie, so those requests fail here.
+ */
+const requireCsrfToken: RequestHandler = (req, res, next) => {
   if (req.method !== 'GET' && req.method !== 'HEAD' && req.get('x-codeclass') !== '1') {
     throw new HttpError(403, 'Missing request header');
   }
+  if (req.user && !isSignedOutEndpoint(req) && !hasCsrfToken(req, res)) {
+    throw new HttpError(403, 'Your session needs refreshing — reload the page.', undefined, 'csrf');
+  }
   next();
 };
+
+/** Origin of the Pyodide CDN that the Python runner loads its runtime and packages from. */
+const PYODIDE_ORIGIN = new URL(PYODIDE_INDEX_URL).origin;
+
+/**
+ * Content-Security-Policy for the code-runner worker script (a worker's CSP comes from its own script response).
+ * Its network access is limited to the Pyodide CDN and our built `/assets/` (sql.js and wasmoon wasm), so student code
+ * can't reach `/api`. Keep in step with the dev-server policy in client/vite.config.ts.
+ */
+function runnerWorkerCsp(req: Request): string {
+  // `req.host` is the Host header (or X-Forwarded-Host from a loopback proxy), port included.
+  const host: unknown = req.host;
+  const assets = typeof host === 'string' && /^[\w.:[\]-]+$/.test(host) ? ` ${req.protocol}://${host}/assets/` : '';
+  return [
+    "default-src 'none'",
+    `script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval' ${PYODIDE_ORIGIN}`,
+    `connect-src ${PYODIDE_ORIGIN}${assets}`,
+  ].join('; ');
+}
+
+/** The built runner worker, e.g. `assets/worker-mDjuYiji.js`. */
+const RUNNER_WORKER_FILE = /[\\/]assets[\\/]worker-[\w-]+\.js$/;
 
 export function createApp() {
   const app = express();
@@ -46,8 +83,8 @@ export function createApp() {
   const api = express.Router();
   api.use(express.json({ limit: '1mb' }));
   api.use(cookieParser());
-  api.use(requireApiHeader);
   api.use(loadUser);
+  api.use(requireCsrfToken);
   api.use(setupRouter);
   api.use(authRouter);
   api.use(adminUsersRouter);
@@ -66,7 +103,15 @@ export function createApp() {
 
   // Production: serve the built client and fall back to index.html for client-side routes.
   if (config.isProd && fs.existsSync(config.clientDist)) {
-    app.use(express.static(config.clientDist, { index: false, maxAge: '1h' }));
+    app.use(
+      express.static(config.clientDist, {
+        index: false,
+        maxAge: '1h',
+        setHeaders: (res: Response, filePath) => {
+          if (RUNNER_WORKER_FILE.test(filePath)) res.setHeader('Content-Security-Policy', runnerWorkerCsp(res.req));
+        },
+      }),
+    );
     app.get(/^(?!\/api\/).*/, (_req, res) => {
       res.setHeader('Cache-Control', 'no-cache');
       res.sendFile(path.join(config.clientDist, 'index.html'));

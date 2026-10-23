@@ -129,9 +129,18 @@ export function toAssignment(row: AssignmentRow, viewer: User): Assignment {
   };
 }
 
-/** Late = submitted after the due date, or not (yet) submitted and the due date has passed. */
-export function isLate(dueAt: string | null, status: SubmissionStatus, submittedAt: string | null, now = Date.now()): boolean {
-  if (!dueAt) return false;
+/**
+ * Late = submitted after the due date, or not (yet) submitted and the due date has passed. Work the teacher returned
+ * for revision (`returnedAt` set) is never late, including once it has been handed in again and graded.
+ */
+export function isLate(
+  dueAt: string | null,
+  status: SubmissionStatus,
+  submittedAt: string | null,
+  returnedAt: string | null,
+  now = Date.now(),
+): boolean {
+  if (!dueAt || returnedAt != null) return false;
   const due = Date.parse(dueAt);
   if (status === 'submitted' || status === 'graded') return submittedAt != null && Date.parse(submittedAt) > due;
   return now > due;
@@ -157,7 +166,8 @@ export function toSubmission(
       grade: null,
       feedback: null,
       gradedAt: null,
-      late: isLate(assignment.due_at, 'not_started', null),
+      returnedAt: null,
+      late: isLate(assignment.due_at, 'not_started', null, null),
     };
   }
   return {
@@ -173,7 +183,8 @@ export function toSubmission(
     grade: row.grade,
     feedback: row.feedback,
     gradedAt: row.graded_at,
-    late: isLate(assignment.due_at, row.status, row.submitted_at),
+    returnedAt: row.returned_at,
+    late: isLate(assignment.due_at, row.status, row.submitted_at, row.returned_at),
   };
 }
 

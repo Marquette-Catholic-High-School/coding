@@ -37,7 +37,7 @@ function collect() {
 }
 
 function newState(stdin: string[]): ReplayState {
-  return { code: '', config: null, stdin, typed: [], seed: 1234, shown: 0 };
+  return { code: '', config: null, stdin, typed: [], ended: false, seed: 1234, shown: 0 };
 }
 
 describe('pseudocode replay', () => {
@@ -66,6 +66,29 @@ describe('pseudocode replay', () => {
     state.typed.push('9');
     expect(runReplayAttempt(state, out)).toEqual({ status: 'ok', error: null });
     expect(text()).toMatch(/^Lucky number \d+\nName\? Hello Ann\nAge\? Age 9\n$/);
+  });
+
+  it('gives end of input once the user ended it, instead of waiting', () => {
+    const state = newState([]);
+    const { out, text } = collect();
+    expect(runReplayAttempt(state, out)).toBeNull();
+    state.ended = true;
+    expect(runReplayAttempt(state, out)).toEqual({
+      status: 'error',
+      error: { message: 'There is no more input.', line: 2, column: 1 },
+      recycle: false,
+    });
+    expect(text()).toMatch(/^Lucky number \d+\nName\? $/);
+  });
+
+  it('uses lines typed before the input was ended first', () => {
+    const state = newState([]);
+    const { out } = collect();
+    expect(runReplayAttempt(state, out)).toBeNull();
+    state.typed.push('Ann');
+    state.ended = true;
+    // The age read gets end of input (null), which the stand-in engine prints as-is.
+    expect(runReplayAttempt(state, out)).toEqual({ status: 'ok', error: null });
   });
 });
 

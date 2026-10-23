@@ -23,23 +23,65 @@ export class NetworkError extends Error {
 
 type Method = 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
 
-async function request<T>(method: Method, path: string, body?: unknown): Promise<T> {
-  let res: Response;
+/** Readable cookie with the session's anti-CSRF token; the server sets it at sign-in (server/src/auth.ts). */
+const CSRF_COOKIE = 'cc_csrf';
+
+/** A cookie's value from a `document.cookie` string. */
+export function readCookie(cookies: string, name: string): string | undefined {
+  for (const part of cookies.split(';')) {
+    const eq = part.indexOf('=');
+    if (eq !== -1 && part.slice(0, eq).trim() === name) {
+      const value = part.slice(eq + 1).trim();
+      try {
+        return decodeURIComponent(value);
+      } catch {
+        return value;
+      }
+    }
+  }
+  return undefined;
+}
+
+/**
+ * The anti-CSRF token, read fresh for every request (it changes when someone signs in). Only the page's main thread
+ * can read cookies — code runners in Web Workers can't, which is the point.
+ */
+function csrfToken(): string | undefined {
+  return typeof document === 'undefined' ? undefined : readCookie(document.cookie, CSRF_COOKIE);
+}
+
+async function send(method: Method, path: string, body: string | undefined): Promise<Response> {
+  const token = csrfToken();
   try {
-    res = await fetch(`/api${path}`, {
+    return await fetch(`/api${path}`, {
       method,
       credentials: 'same-origin',
       headers: {
         'x-codeclass': '1',
+        ...(token ? { 'x-codeclass-token': token } : {}),
         ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
       },
-      body: body !== undefined ? JSON.stringify(body) : undefined,
+      body,
     });
   } catch {
     throw new NetworkError();
   }
+}
+
+async function readBody(res: Response): Promise<unknown> {
   const text = await res.text();
-  const data = text ? (JSON.parse(text) as unknown) : null;
+  return text ? (JSON.parse(text) as unknown) : null;
+}
+
+async function request<T>(method: Method, path: string, body?: unknown): Promise<T> {
+  const json = body !== undefined ? JSON.stringify(body) : undefined;
+  let res = await send(method, path, json);
+  let data = await readBody(res);
+  // A session from before the anti-CSRF cookie existed (or a stale cookie): the 403 sets a fresh cookie, so retry once.
+  if (res.status === 403 && (data as ApiErrorBody | null)?.error?.code === 'csrf') {
+    res = await send(method, path, json);
+    data = await readBody(res);
+  }
   if (!res.ok) {
     const err = (data as ApiErrorBody | null)?.error;
     throw new ApiError(res.status, err?.message ?? `Request failed (${res.status})`, err?.fieldErrors);

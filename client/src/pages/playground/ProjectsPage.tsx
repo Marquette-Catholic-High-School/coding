@@ -1,12 +1,12 @@
-import { ActionIcon, Badge, Box, Button, Card, EmptyState, Group, Menu, SimpleGrid, Text, Tooltip } from '@mantine/core';
+import { ActionIcon, Box, Button, Card, EmptyState, Group, Menu, SimpleGrid, Skeleton, Text, Tooltip } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import type { Language, Project } from '@codeclass/shared';
 import { IconClock, IconCode, IconDots, IconPencil, IconPlus, IconTrash } from '@tabler/icons-react';
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import { Link } from 'react-router';
-import { useLanguageMap } from '../../api/languages';
+import { useLanguages } from '../../api/languages';
 import { useProjects } from '../../api/projects';
-import { BADGE_NO_SHRINK, LanguageBadge } from '../../components/badges';
+import { CodeChip, LanguageBadge, UnavailableLanguageBadge } from '../../components/badges';
 import classes from '../../components/cards.module.css';
 import { PageHeader } from '../../components/PageHeader';
 import { QueryState } from '../../components/QueryState';
@@ -14,25 +14,26 @@ import { RelativeTime } from '../../components/RelativeTime';
 import { usePageTitle } from '../../hooks/usePageTitle';
 import { NewProjectModal, RenameProjectModal, useConfirmDeleteProject } from '../student/ProjectModals';
 
-function ProjectLanguageBadge({ language, languageId }: { language: Language | undefined; languageId: string }) {
+/** What we know about the installed languages: still loading, couldn't load, or loaded (id → language). */
+type LanguageLookup = { status: 'pending' } | { status: 'error' } | { status: 'success'; byId: Map<string, Language> };
+
+function ProjectLanguageBadge({ languages, languageId }: { languages: LanguageLookup; languageId: string }) {
+  if (languages.status === 'pending') return <Skeleton h={22} w={90} radius="sm" />;
+  // Without the language list we can't tell whether it was uninstalled, so just show its id.
+  if (languages.status === 'error') return <CodeChip>{languageId}</CodeChip>;
+  const language = languages.byId.get(languageId);
   if (language) return <LanguageBadge kind={language.kind} name={language.name} />;
-  return (
-    <Tooltip label="This language isn't available any more.">
-      <Badge variant="outline" color="gray" tt="none" {...BADGE_NO_SHRINK}>
-        {languageId}
-      </Badge>
-    </Tooltip>
-  );
+  return <UnavailableLanguageBadge languageId={languageId} />;
 }
 
 function ProjectCard({
   project,
-  language,
+  languages,
   onRename,
   onDelete,
 }: {
   project: Project;
-  language: Language | undefined;
+  languages: LanguageLookup;
   onRename: () => void;
   onDelete: () => void;
 }) {
@@ -47,7 +48,7 @@ function ProjectCard({
           {preview || 'No code yet'}
         </Text>
         <Group gap="lg" wrap="wrap">
-          <ProjectLanguageBadge language={language} languageId={project.languageId} />
+          <ProjectLanguageBadge languages={languages} languageId={project.languageId} />
           <Group gap={6} wrap="nowrap">
             <IconClock size={16} color="var(--mantine-color-dimmed)" />
             <Text size="sm">
@@ -86,7 +87,16 @@ function ProjectCard({
 
 export function ProjectsPage() {
   const query = useProjects();
-  const languages = useLanguageMap();
+  const languagesQuery = useLanguages();
+  const languages = useMemo<LanguageLookup>(
+    () =>
+      languagesQuery.data
+        ? { status: 'success', byId: new Map(languagesQuery.data.languages.map((l) => [l.id, l])) }
+        : languagesQuery.isError
+          ? { status: 'error' }
+          : { status: 'pending' },
+    [languagesQuery.data, languagesQuery.isError],
+  );
   const [newOpened, newModal] = useDisclosure(false);
   const [renaming, setRenaming] = useState<Project | null>(null);
   const confirmDelete = useConfirmDeleteProject();
@@ -127,7 +137,7 @@ export function ProjectsPage() {
                 <ProjectCard
                   key={project.id}
                   project={project}
-                  language={languages.get(project.languageId)}
+                  languages={languages}
                   onRename={() => setRenaming(project)}
                   onDelete={() => confirmDelete(project)}
                 />

@@ -1,6 +1,6 @@
 import { Badge, Button, Code, Group, Loader, Paper, Stack, Text, ThemeIcon, Tooltip } from '@mantine/core';
 import type { TestCase, TestResult } from '@codeclass/shared';
-import { IconCheck, IconEyeOff, IconMinus, IconPlayerPlay, IconX } from '@tabler/icons-react';
+import { IconCheck, IconEyeOff, IconMinus, IconPlayerPlay, IconPlayerStop, IconX } from '@tabler/icons-react';
 import { BADGE_NO_SHRINK, scoreTextColor } from '../components/badges';
 import classes from './ide.module.css';
 import { formatDuration, plural, summarizeTests, testName } from './ideUtils';
@@ -15,6 +15,8 @@ export interface TestsPanelProps {
   /** False while the program itself is running. */
   canRun: boolean;
   onRunTests: () => void;
+  /** Stops a test run; shown in place of Run tests while tests run. */
+  onStop: () => void;
 }
 
 function Block({ label, text }: { label: string; text: string }) {
@@ -97,7 +99,7 @@ function TestCard({ test, index, result, running }: { test: TestCase; index: num
 }
 
 /** Test list with pass/fail status, expected vs actual output and a Run tests button. */
-export function TestsPanel({ tests, results, hiddenTestCount, running, currentTestIndex, canRun, onRunTests }: TestsPanelProps) {
+export function TestsPanel({ tests, results, hiddenTestCount, running, currentTestIndex, canRun, onRunTests, onStop }: TestsPanelProps) {
   const byId = new Map((results ?? []).map((r) => [r.testId, r]));
   const summary = summarizeTests(tests, results);
   const hiddenNote = hiddenTestCount > 0 ? `+ ${plural(hiddenTestCount, 'hidden test')} your teacher will run` : null;
@@ -125,22 +127,26 @@ export function TestsPanel({ tests, results, hiddenTestCount, running, currentTe
               {running ? 'Running tests…' : `${plural(tests.length, 'test')} — not run yet`}
             </Text>
           )}
+          {summary && !running && summary.ran < summary.total && (
+            <Text size="xs" c="dimmed">
+              {summary.ran} of {plural(summary.total, 'test')} ran
+            </Text>
+          )}
           {hiddenNote && (
             <Text size="xs" c="dimmed">
               {hiddenNote}
             </Text>
           )}
         </Stack>
-        <Button
-          size="xs"
-          variant="light"
-          leftSection={<IconPlayerPlay size={14} />}
-          loading={running}
-          disabled={!canRun}
-          onClick={onRunTests}
-        >
-          Run tests
-        </Button>
+        {running ? (
+          <Button size="xs" variant="light" color="red" leftSection={<IconPlayerStop size={14} />} onClick={onStop}>
+            Stop
+          </Button>
+        ) : (
+          <Button size="xs" variant="light" leftSection={<IconPlayerPlay size={14} />} disabled={!canRun} onClick={onRunTests}>
+            Run tests
+          </Button>
+        )}
       </Group>
       {tests.map((test, i) => (
         <TestCard key={test.id} test={test} index={i} result={byId.get(test.id)} running={running && currentTestIndex === i} />

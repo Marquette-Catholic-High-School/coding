@@ -24,6 +24,8 @@ export interface Language {
   readonly firstWords: ReadonlyMap<string, readonly PseudoKeyword[]>;
   /** Upper-cased spelling → spelling as configured (for "capital letters matter" hints). */
   readonly spellingsByUpper: ReadonlyMap<string, string>;
+  /** Upper-cased first word → multi-word spellings starting with it (for "capital letters matter" hints on `End IF`). */
+  readonly multiWordByFirstUpper: ReadonlyMap<string, readonly string[]>;
   readonly builtinByName: ReadonlyMap<string, PseudoBuiltin>;
   readonly assignOps: ReadonlySet<string>;
   /** First assignment operator, or null when only SET … TO is available. */
@@ -88,6 +90,7 @@ function compile(config: PseudocodeConfig): Language {
   const kw = {} as Record<PseudoKeyword, string>;
   const firstWords = new Map<string, PseudoKeyword[]>();
   const spellingsByUpper = new Map<string, string>();
+  const multiWordByFirstUpper = new Map<string, string[]>();
   for (const info of KEYWORD_INFO) {
     const spellings = config.keywords[info.id];
     kw[info.id] = spellings[0] ?? info.defaults[0]!;
@@ -110,6 +113,10 @@ function compile(config: PseudocodeConfig): Language {
         const slots = firstWords.get(first) ?? [];
         if (!slots.includes(info.id)) slots.push(info.id);
         firstWords.set(first, slots);
+        const upper = words[0]!.toUpperCase();
+        const multi = multiWordByFirstUpper.get(upper) ?? [];
+        if (!multi.includes(spelling)) multi.push(spelling);
+        multiWordByFirstUpper.set(upper, multi);
       }
       if (!spellingsByUpper.has(spelling.toUpperCase())) spellingsByUpper.set(spelling.toUpperCase(), spelling);
     }
@@ -131,6 +138,7 @@ function compile(config: PseudocodeConfig): Language {
     kw,
     firstWords,
     spellingsByUpper,
+    multiWordByFirstUpper,
     builtinByName,
     assignOps,
     assign,

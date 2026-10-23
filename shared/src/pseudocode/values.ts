@@ -18,12 +18,25 @@ export function formatNumber(n: number): string {
   return c === 0 ? '0' : String(c);
 }
 
+/** Thrown when a list holds lists inside lists too many levels deep to turn into text (the JavaScript stack ran out). */
+export class ValueTooDeepError extends Error {
+  constructor() {
+    super('A list is nested too deeply to show.');
+    this.name = 'ValueTooDeepError';
+  }
+}
+
 /** Text as the student sees it from OUTPUT: strings raw, lists like [1, 2, "a"], booleans in the teacher's words. */
 export function formatValue(v: Value, words: BoolWords): string {
   if (typeof v === 'string') return v;
   if (typeof v === 'number') return formatNumber(v);
   if (typeof v === 'boolean') return v ? words.trueText : words.falseText;
-  return formatList(v, words, new Set());
+  try {
+    return formatList(v, words, new Set());
+  } catch (e) {
+    if (e instanceof RangeError && /stack|recursion/i.test(e.message)) throw new ValueTooDeepError();
+    throw e;
+  }
 }
 
 function formatList(list: Value[], words: BoolWords, seen: Set<Value[]>): string {
@@ -54,6 +67,21 @@ export function valuesEqual(a: Value, b: Value, depth = 0): boolean {
   return false;
 }
 
+/**
+ * `=` as students expect it: like `valuesEqual`, but a number also equals text that looks like that number ("1" = 1),
+ * because INPUT turns typed numbers into numbers. Items inside lists still compare strictly.
+ */
+export function looselyEqual(a: Value, b: Value): boolean {
+  if (typeof a === 'number' && typeof b === 'string') return numberEqualsText(a, b);
+  if (typeof a === 'string' && typeof b === 'number') return numberEqualsText(b, a);
+  return valuesEqual(a, b);
+}
+
+function numberEqualsText(n: number, text: string): boolean {
+  const parsed = parseNumericText(text);
+  return parsed !== null && numbersEqual(n, parsed);
+}
+
 /** Short type label: "a number", "text", "a list", "TRUE/FALSE". */
 export function typeLabel(v: Value, words: BoolWords): string {
   if (typeof v === 'number') return 'a number';
@@ -71,6 +99,15 @@ export function describeValue(v: Value, words: BoolWords): string {
 }
 
 const NUMERIC = /^\s*[+-]?(?:\d+(?:\.\d*)?|\.\d+)\s*$/;
+const SURROGATE = /[\uD800-\uDFFF]/;
+
+/**
+ * The characters of some text, where an emoji (or any character outside the Basic Multilingual Plane) counts as one.
+ * Plain text is returned as it is (strings index like arrays), so the common case allocates nothing.
+ */
+export function textChars(text: string): string | string[] {
+  return SURROGATE.test(text) ? Array.from(text) : text;
+}
 
 /** Number for numeric-looking text ("42", " -3.5 "), otherwise null. */
 export function parseNumericText(text: string): number | null {

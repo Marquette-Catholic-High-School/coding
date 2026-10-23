@@ -3,6 +3,7 @@ import { schemaResolver, useForm } from '@mantine/form';
 import { changePasswordSchema, updateProfileSchema, type User } from '@codeclass/shared';
 import { IconAlertTriangle, IconAt, IconDeviceFloppy, IconKey } from '@tabler/icons-react';
 import dayjs from 'dayjs';
+import { useEffect } from 'react';
 import { useChangePassword, useUpdateProfile } from '../../api/auth';
 import { fieldErrors } from '../../api/client';
 import { useCurrentUser } from '../../auth/AuthProvider';
@@ -50,6 +51,15 @@ function ProfileCard({ user }: { user: User }) {
     initialValues: { name: user.name, email: user.email ?? '' },
     validate: validateProfile,
   });
+
+  // Re-seed untouched fields if the profile changes elsewhere (e.g. an admin edits their own row on the Users page),
+  // so saving this form can't send the old name back.
+  useEffect(() => {
+    const current = { name: user.name, email: user.email ?? '' };
+    if (form.isDirty()) return;
+    form.setValues(current);
+    form.resetDirty(current);
+  }, [user.name, user.email]); // `form` is deliberately left out: only a change to the saved profile should re-seed.
 
   const handleSubmit = form.onSubmit((values) => {
     updateProfile.mutate(values, {

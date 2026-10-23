@@ -81,6 +81,8 @@ export interface SubmissionDbRow {
   feedback: string | null;
   graded_at: string | null;
   graded_by: number | null;
+  /** Set when the teacher returns the work for revision; cleared only when the teacher sets it back to submitted. */
+  returned_at: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -188,6 +190,7 @@ CREATE TABLE IF NOT EXISTS submissions (
   feedback TEXT,
   graded_at TEXT,
   graded_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  returned_at TEXT,
   created_at TEXT NOT NULL DEFAULT ${NOW},
   updated_at TEXT NOT NULL DEFAULT ${NOW},
   UNIQUE (assignment_id, student_id)
@@ -207,6 +210,19 @@ CREATE TABLE IF NOT EXISTS projects (
 CREATE INDEX IF NOT EXISTS projects_owner ON projects(owner_id);
 `;
 
+/** Brings databases created by older versions up to SCHEMA (CREATE TABLE IF NOT EXISTS never adds columns). */
+export function migrate(db: Database.Database): void {
+  const submissionColumns = db.prepare('PRAGMA table_info(submissions)').all() as { name: string }[];
+  if (!submissionColumns.some((c) => c.name === 'returned_at')) {
+    db.transaction(() => {
+      db.exec('ALTER TABLE submissions ADD COLUMN returned_at TEXT');
+      // Before returned_at existed, returning work left it in progress with the teacher's feedback (students can't
+      // write feedback), so mark those rows as returned.
+      db.exec("UPDATE submissions SET returned_at = updated_at WHERE status = 'in_progress' AND feedback IS NOT NULL");
+    })();
+  }
+}
+
 function open(file: string): Database.Database {
   if (file !== ':memory:') fs.mkdirSync(path.dirname(file), { recursive: true });
   const db = new Database(file);
@@ -214,6 +230,7 @@ function open(file: string): Database.Database {
   db.pragma('foreign_keys = ON');
   db.pragma('busy_timeout = 5000');
   db.exec(SCHEMA);
+  migrate(db);
   return db;
 }
 

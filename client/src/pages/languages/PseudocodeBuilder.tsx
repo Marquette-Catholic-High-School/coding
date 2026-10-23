@@ -45,7 +45,7 @@ import { useNavigate, useSearchParams } from 'react-router';
 import { fieldErrors } from '../../api/client';
 import { useUpdateLanguage } from '../../api/languages';
 import { useCurrentUser } from '../../auth/AuthProvider';
-import { LanguageBadge } from '../../components/badges';
+import { LanguageBadge, LanguageDisabledBadge, TabCountBadge } from '../../components/badges';
 import cards from '../../components/cards.module.css';
 import { notifyError, notifySuccess } from '../../components/notify';
 import { PageHeader } from '../../components/PageHeader';
@@ -54,7 +54,7 @@ import { BuilderSettingsTab } from './BuilderSettingsTab';
 import { BuiltinsTab } from './BuiltinsTab';
 import { draftProblems, presetOrDefault, sameDraft, sampleProgram, toDraft, type LanguageDraft } from './builderModel';
 import { KeywordsTab } from './KeywordsTab';
-import { DisabledBadge, ownerLabel, usageLabel } from './languageParts';
+import { ownerLabel, usageLabel } from './languageParts';
 import { RulesTab } from './RulesTab';
 import { useUnsavedChangesGuard } from './useUnsavedChangesGuard';
 
@@ -204,7 +204,7 @@ export function PseudocodeBuilder({ language }: { language: Language }) {
         badges={
           <>
             <LanguageBadge kind="pseudocode" name="Pseudocode" />
-            {!language.enabled && <DisabledBadge />}
+            {!language.enabled && <LanguageDisabledBadge />}
           </>
         }
         subtitle={`${ownerLabel(language, user.id)} · ${usageLabel(language.assignmentCount)}`}
@@ -275,11 +275,7 @@ export function PseudocodeBuilder({ language }: { language: Language }) {
           <Tabs.Tab
             value="builtins"
             leftSection={<IconMathFunction size={16} />}
-            rightSection={
-              <Badge size="xs" variant="light" circle>
-                {builtinCount}
-              </Badge>
-            }
+            rightSection={<TabCountBadge count={builtinCount} />}
           >
             Built-ins
           </Tabs.Tab>

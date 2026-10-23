@@ -86,7 +86,9 @@ router.post('/assignments/:id/submit', requireAuth, (req, res) => {
   const input = parseBody(submitSchema, req.body);
   const existing = findSubmission(assignment.id, user.id);
   if (existing?.status === 'graded') throw conflict('This work has already been graded.');
-  if (assignment.allow_late !== 1 && assignment.due_at && Date.now() > Date.parse(assignment.due_at)) {
+  // Work the teacher returned for revision can always be handed in again (and isn't late; see isLate).
+  const returned = existing?.returned_at != null;
+  if (!returned && assignment.allow_late !== 1 && assignment.due_at && Date.now() > Date.parse(assignment.due_at)) {
     throw conflict("The due date has passed and this assignment doesn't accept late work.");
   }
 
@@ -213,15 +215,17 @@ router.patch('/assignments/:id/submissions/:studentId', requireStaff, (req, res)
       next.graded_at = now;
       next.graded_by = user.id;
     } else if (status === 'in_progress') {
-      // Returned for revision: the student can edit and hand in again. Feedback stays; the old grade goes.
+      // Returned for revision: the student can edit and hand in again, even past the due date with late work off,
+      // and the work no longer counts as late. Feedback and the original hand-in time stay; the old grade goes.
       next.status = 'in_progress';
-      next.submitted_at = null;
+      if (row.status === 'submitted' || row.status === 'graded') next.returned_at = now;
       next.grade = null;
       next.graded_at = null;
       next.graded_by = null;
     } else if (status === 'submitted') {
       next.status = 'submitted';
       next.submitted_at = row.submitted_at ?? now;
+      next.returned_at = null;
       next.grade = null;
       next.graded_at = null;
       next.graded_by = null;
@@ -233,7 +237,7 @@ router.patch('/assignments/:id/submissions/:studentId', requireStaff, (req, res)
 
     db.prepare(
       `UPDATE submissions SET status = ?, submitted_at = ?, test_results = ?, auto_score = ?, grade = ?, feedback = ?,
-         graded_at = ?, graded_by = ?, updated_at = ? WHERE id = ?`,
+         graded_at = ?, graded_by = ?, returned_at = ?, updated_at = ? WHERE id = ?`,
     ).run(
       next.status,
       next.submitted_at,
@@ -243,6 +247,7 @@ router.patch('/assignments/:id/submissions/:studentId', requireStaff, (req, res)
       next.feedback,
       next.graded_at,
       next.graded_by,
+      next.returned_at,
       now,
       row.id,
     );

@@ -75,6 +75,8 @@ export interface ReplayState {
   stdin: readonly string[];
   /** Lines typed so far in answer to input requests (the page echoes these itself). */
   typed: string[];
+  /** The user ended the input: once the typed lines run out, reads get end of input instead of waiting. */
+  ended: boolean;
   seed: number;
   /** Characters of output already shown by earlier attempts. */
   shown: number;
@@ -121,6 +123,7 @@ export function runReplayAttempt(state: ReplayState, out: ReplayOutput): LangRes
           }
           const answer = typed.shift();
           if (answer !== undefined) return answer;
+          if (state.ended) return null;
           waiting = true;
           throw NEEDS_INPUT;
         },

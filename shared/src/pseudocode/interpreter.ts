@@ -8,10 +8,11 @@ import {
   describeValue,
   formatNumber,
   formatValue,
+  looselyEqual,
   numbersEqual,
   parseNumericText,
+  textChars,
   typeLabel,
-  valuesEqual,
   type BoolWords,
   type Value,
 } from './values';
@@ -21,6 +22,15 @@ export interface InterpreterLimits {
   maxCallDepth: number;
   random: () => number;
 }
+
+/**
+ * Longest list a program may make. `list ← list + list` doubles a list in one step, so without a limit a short loop
+ * could use gigabytes of memory long before the step limit stops it.
+ */
+const MAX_LIST_LENGTH = 10_000_000;
+
+/** Where a BYREF argument came from: the caller's variable, or a position in a list. */
+type RefTarget = { name: string } | { list: Value[]; index: number };
 
 const ARITHMETIC_VERBS: Partial<Record<A.BinaryOp, string>> = {
   '+': 'add',
@@ -34,6 +44,8 @@ export class Interpreter {
   steps = 0;
   /** Innermost call being run (where a JavaScript stack overflow is reported). */
   currentCall: A.CallExpr | null = null;
+  /** Statement (or loop pass) being run, for problems JavaScript reports without a position. */
+  private current: Pos | null = null;
   private depth = 0;
   private readonly globals = new Map<string, Value>();
   private locals: Map<string, Value>;
@@ -69,6 +81,11 @@ export class Interpreter {
     return this.tooDeep(at);
   }
 
+  /** The statement being run when something went wrong (line 1 before anything ran). */
+  currentPosition(): Pos {
+    return this.current ?? { line: 1, col: 1, endCol: 1 };
+  }
+
   // -----------------------------------------------------------------------------------------------------------------
   // Statements
   // -----------------------------------------------------------------------------------------------------------------
@@ -80,6 +97,7 @@ export class Interpreter {
   }
 
   private tick(pos: Pos): void {
+    this.current = pos;
     if (++this.steps > this.limits.maxSteps) throw this.tooManySteps(pos);
   }
 
@@ -213,7 +231,7 @@ export class Interpreter {
     const collection = this.eval(s.list);
     let items: readonly Value[];
     if (Array.isArray(collection)) items = collection.slice();
-    else if (typeof collection === 'string') items = collection.split('');
+    else if (typeof collection === 'string') items = Array.from(collection);
     else {
       throw runtimeError(
         `${this.lang.kw.forEach} needs a list (or some text) to go through, but got ${describeValue(collection, this.words)}.`,
@@ -356,11 +374,10 @@ export class Interpreter {
       }
       case 'index': {
         const container = this.eval(e.target);
-        const index = this.eval(e.index);
-        if (Array.isArray(container)) return container[this.position(index, container.length, e.index, false)]!;
-        if (typeof container === 'string') return container[this.position(index, container.length, e.index, true)]!;
-        throw runtimeError(`You can only use [ ] on a list or text, but this is ${describeValue(container, this.words)}.`, e.target);
+        return this.indexValue(container, this.eval(e.index), e);
       }
+      case 'newArray':
+        return this.newArray(e);
       case 'call': {
         const result = this.call(e);
         if (result === undefined) throw this.noValue(e);
@@ -369,6 +386,54 @@ export class Interpreter {
       case 'input':
         return this.readInput(e.prompt ? formatValue(this.eval(e.prompt), this.words) : null, e);
     }
+  }
+
+  private indexValue(container: Value, index: Value, e: A.IndexExpr): Value {
+    if (Array.isArray(container)) return container[this.position(index, container.length, e.index, false)]!;
+    if (typeof container === 'string') {
+      const chars = textChars(container);
+      return chars[this.position(index, chars.length, e.index, true)]!;
+    }
+    throw runtimeError(`You can only use [ ] on a list or text, but this is ${describeValue(container, this.words)}.`, e.target);
+  }
+
+  /** `ARRAY[1:5] OF INTEGER` from a DECLARE: a list of (high - low + 1) default values, one level per bound pair. */
+  private newArray(e: A.NewArrayExpr): Value[] {
+    const sizes = e.bounds.map(({ low, high }) => {
+      const first = this.arrayBound(low, 'first');
+      const last = this.arrayBound(high, 'last');
+      if (last < first - 1) {
+        throw runtimeError(`The last position (${formatNumber(last)}) must not be before the first position (${formatNumber(first)}).`, high);
+      }
+      return last - first + 1;
+    });
+    // Every level is made, even after an empty one (ARRAY[1:1000000, 1:0] is a million empty lists).
+    if (sizes.reduce((total, n) => total * Math.max(n, 1), 1) > MAX_LIST_LENGTH) throw this.listTooBig(e);
+    const make = (level: number): Value[] => {
+      const n = sizes[level]!;
+      const out = new Array<Value>(n);
+      for (let i = 0; i < n; i++) out[i] = level + 1 < sizes.length ? make(level + 1) : e.fill;
+      return out;
+    };
+    return make(0);
+  }
+
+  private arrayBound(e: A.Expr, which: string): number {
+    const v = this.eval(e);
+    if (typeof v !== 'number') {
+      throw runtimeError(`The ${which} position of an ARRAY must be a number, but it's ${describeValue(v, this.words)}.`, e);
+    }
+    const n = cleanNumber(v);
+    if (!Number.isInteger(n)) throw runtimeError(`The ${which} position of an ARRAY must be a whole number, but it's ${formatNumber(n)}.`, e);
+    return n;
+  }
+
+  private listTooBig(at: Pos): PseudoError {
+    return runtimeError(
+      `That list would have more than ${formatCount(MAX_LIST_LENGTH)} items — too many for the computer to handle.`,
+      at,
+      `Check for a loop that keeps making a list bigger, like ${this.lang.assignExample('list', 'list + list')}`,
+    );
   }
 
   private evalBinary(e: A.BinaryExpr): Value {
@@ -425,9 +490,9 @@ export class Interpreter {
   private evalMixed(e: A.BinaryExpr, l: Value, r: Value): Value {
     switch (e.op) {
       case '=':
-        return valuesEqual(l, r);
+        return looselyEqual(l, r);
       case '!=':
-        return !valuesEqual(l, r);
+        return !looselyEqual(l, r);
       case '&':
         return formatValue(l, this.words) + formatValue(r, this.words);
       case '+':
@@ -435,7 +500,10 @@ export class Interpreter {
           if (this.lang.concatPlus) return formatValue(l, this.words) + formatValue(r, this.words);
           throw runtimeError("You can't add text.", e.opPos, this.lang.concatAmp ? 'To join text, use & — for example "Hi " & name.' : undefined);
         }
-        if (Array.isArray(l) && Array.isArray(r)) return [...l, ...r];
+        if (Array.isArray(l) && Array.isArray(r)) {
+          if (l.length + r.length > MAX_LIST_LENGTH) throw this.listTooBig(e.opPos);
+          return l.concat(r);
+        }
         break;
       case '<':
       case '>':
@@ -449,7 +517,7 @@ export class Interpreter {
         throw runtimeError(
           `You can't compare ${typeLabel(l, this.words)} with ${typeLabel(r, this.words)} using "${e.opText}".`,
           e.opPos,
-          this.numericTextHint(typeof l === 'string' ? l : r),
+          this.compareHint(e, l, r),
         );
       default:
         break;
@@ -467,6 +535,18 @@ export class Interpreter {
       hint = `To add an item to a list, use ${this.lang.builtinName('append')}(list, item).`;
     }
     return runtimeError(`You can't ${what}.`, at, hint);
+  }
+
+  /** `age >= "18"`: quoted digits are text, while typed-in numbers become numbers, so suggest dropping the quotes. */
+  private compareHint(e: A.BinaryExpr, l: Value, r: Value): string | undefined {
+    const leftIsText = typeof l === 'string';
+    const text = leftIsText ? l : r;
+    const other = leftIsText ? r : l;
+    const literal = (leftIsText ? e.left : e.right).k === 'str';
+    const n = typeof text === 'string' && typeof other === 'number' && literal ? parseNumericText(text) : null;
+    if (n === null) return this.numericTextHint(text);
+    const typed = '(Typed input that looks like a number becomes a number.)';
+    return `"${text}" is text because of its quote marks — write ${formatNumber(n)} to compare numbers. ${typed}`;
   }
 
   /** For text that looks like a number: suggest converting it. */
@@ -503,17 +583,35 @@ export class Interpreter {
   private call(e: A.CallExpr): Value | undefined {
     const n = e.args.length;
     const args = new Array<Value>(n);
-    for (let i = 0; i < n; i++) args[i] = this.eval(e.args[i]!);
-    if (e.fn) return this.callFunction(e.fn, args, e);
+    const fn = e.fn;
+    let refs: Array<RefTarget | undefined> | null = null;
+    for (let i = 0; i < n; i++) {
+      const arg = e.args[i]!;
+      if (fn?.byRef[i] && arg.k === 'var') {
+        (refs ??= [])[i] = { name: arg.name };
+        args[i] = this.getVar(arg);
+      } else if (fn?.byRef[i] && arg.k === 'index') {
+        const container = this.eval(arg.target);
+        const index = this.eval(arg.index);
+        if (Array.isArray(container)) {
+          const at = this.position(index, container.length, arg.index, false);
+          (refs ??= [])[i] = { list: container, index: at };
+          args[i] = container[at]!;
+        } else args[i] = this.indexValue(container, index, arg);
+      } else args[i] = this.eval(arg);
+    }
+    if (fn) return this.callFunction(fn, args, e, refs);
     return this.callBuiltin(e.builtin!, args, e);
   }
 
-  private callFunction(fn: A.FuncDef, args: Value[], e: A.CallExpr): Value | undefined {
+  /** Runs a user FUNCTION / PROCEDURE. BYREF parameters are copied back to the caller's variables when it ends. */
+  private callFunction(fn: A.FuncDef, args: Value[], e: A.CallExpr, refs: ReadonlyArray<RefTarget | undefined> | null): Value | undefined {
     if (this.depth >= this.limits.maxCallDepth) throw this.tooDeep(e);
     const scope = new Map<string, Value>();
     for (let i = 0; i < fn.params.length; i++) scope.set(fn.params[i]!, args[i]!);
     const savedLocals = this.locals;
     const savedCall = this.currentCall;
+    const savedCurrent = this.current;
     this.locals = scope;
     this.currentCall = e;
     this.depth++;
@@ -523,7 +621,17 @@ export class Interpreter {
     this.returnValue = undefined;
     this.depth--;
     this.currentCall = savedCall;
+    this.current = savedCurrent;
     this.locals = savedLocals;
+    if (refs) {
+      for (let i = 0; i < refs.length; i++) {
+        const ref = refs[i];
+        if (!ref) continue;
+        const value = scope.get(fn.params[i]!)!;
+        if ('name' in ref) this.setVar(ref.name, value);
+        else ref.list[ref.index] = value;
+      }
+    }
     return result;
   }
 
@@ -580,14 +688,19 @@ export class Interpreter {
     switch (id) {
       case 'length': {
         const v = args[0]!;
-        if (Array.isArray(v) || typeof v === 'string') return v.length;
+        if (Array.isArray(v)) return v.length;
+        if (typeof v === 'string') return textChars(v).length;
         throw runtimeError(`${name} needs a list or some text, but got ${describeValue(v, this.words)}.`, e.args[0]!);
       }
-      case 'append':
-        this.listArg(args[0]!, name, e).push(args[1]!);
+      case 'append': {
+        const list = this.listArg(args[0]!, name, e);
+        if (list.length >= MAX_LIST_LENGTH) throw this.listTooBig(e);
+        list.push(args[1]!);
         return undefined;
+      }
       case 'insert': {
         const list = this.listArg(args[0]!, name, e);
+        if (list.length >= MAX_LIST_LENGTH) throw this.listTooBig(e);
         const at = this.wholeNumber(args[1]!, name, 'position', e.args[1]!);
         const i = at - base;
         if (i < 0 || i > list.length) {
@@ -639,7 +752,7 @@ export class Interpreter {
         return id === 'upper' ? text.toUpperCase() : text.toLowerCase();
       }
       case 'substring': {
-        const text = this.textArg(args[0]!, name, e.args[0]!);
+        const text = textChars(this.textArg(args[0]!, name, e.args[0]!));
         const start = this.wholeNumber(args[1]!, name, 'start position', e.args[1]!);
         const length = this.wholeNumber(args[2]!, name, 'length', e.args[2]!);
         const i = start - base;
@@ -648,7 +761,8 @@ export class Interpreter {
           throw runtimeError(`${name} can't start at position ${start} — ${range}.`, e.args[1]!);
         }
         if (length < 0) throw runtimeError(`${name} needs a length of 0 or more.`, e.args[2]!);
-        return text.slice(i, i + length);
+        const part = text.slice(i, i + length);
+        return typeof part === 'string' ? part : part.join('');
       }
       case 'abs':
         return Math.abs(this.numberArg(args[0]!, name, e.args[0]!));

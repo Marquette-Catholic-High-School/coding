@@ -28,7 +28,7 @@ import {
   type PseudocodeConfig,
 } from '@codeclass/shared/pseudocode';
 import { IconLock, IconLockOpen, IconRestore } from '@tabler/icons-react';
-import { BADGE_NO_SHRINK } from '../../components/badges';
+import { BADGE_NO_SHRINK, NotLearnedBadge } from '../../components/badges';
 import { cleanWords, LIMITS, presetOrDefault } from './builderModel';
 import classes from './builder.module.css';
 
@@ -146,11 +146,7 @@ function TopicCard({
               <Title order={3} fz="h4" c={learned ? undefined : 'dimmed'}>
                 {info.label}
               </Title>
-              {!learned && (
-                <Badge variant="light" color="gray" size="sm" leftSection={<IconLock size={12} />} {...BADGE_NO_SHRINK}>
-                  Not learned yet
-                </Badge>
-              )}
+              {!learned && <NotLearnedBadge />}
             </Group>
             <Text size="sm" c="dimmed">
               {info.description}

@@ -1,4 +1,4 @@
-import { Alert, Anchor, Box, Button, Code, Collapse, Group, Loader, ScrollArea, Stack, Text, TextInput } from '@mantine/core';
+import { Alert, Anchor, Box, Button, Code, Collapse, Group, Kbd, Loader, ScrollArea, Stack, Text, TextInput, Tooltip } from '@mantine/core';
 import {
   IconAlertTriangle,
   IconBulb,
@@ -9,10 +9,13 @@ import {
   IconPlayerStop,
   IconTerminal2,
 } from '@tabler/icons-react';
-import { useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { memo, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import type { OutputChunk, RunOutcome, RunPhase } from '../runtime';
 import classes from './ide.module.css';
-import { formatDuration, mergeChunks } from './ideUtils';
+import { consoleInputKey, formatDuration, tailSegments, type ConsoleSegment } from './ideUtils';
+
+/** The console renders at most this many runs of output; earlier ones are replaced by a note. */
+const MAX_CONSOLE_SEGMENTS = 2000;
 
 export interface ConsolePanelProps {
   output: OutputChunk[];
@@ -21,6 +24,8 @@ export interface ConsolePanelProps {
   inputPrompt?: string | null;
   /** Answers an input request; the console shows an input field while the program waits. */
   onSubmitInput?: (line: string) => void;
+  /** Tells the program there is no more input (end of file); offered next to the input field and as Ctrl+D. */
+  onEndInput?: () => void;
   /** Footer for the last finished run (hidden while running). */
   outcome?: RunOutcome | null;
   /** Shown while the runtime downloads/starts. */
@@ -66,22 +71,42 @@ function PhaseStatus({ phase }: { phase: RunPhase | null }) {
   return null;
 }
 
-function InputLine({ prompt, onSubmit }: { prompt: string | null; onSubmit: (line: string) => void }) {
+function InputLine({
+  prompt,
+  onSubmit,
+  onEnd,
+}: {
+  prompt: string | null;
+  onSubmit: (line: string) => void;
+  onEnd?: () => void;
+}) {
   const [value, setValue] = useState('');
   const label = prompt?.trim() ? `Answer: ${prompt.trim()}` : 'Type a line of input for your program';
+  // Anything already typed is sent as a last line first, so it isn't lost.
+  const endInput = (end: () => void) => {
+    if (value !== '') onSubmit(value);
+    setValue('');
+    end();
+  };
   return (
-    <Box px="sm" pb="xs">
+    <Group px="sm" pb="xs" gap="xs" wrap="nowrap">
       <TextInput
         size="xs"
         ff="monospace"
         autoFocus
+        style={{ flex: 1, minWidth: 0 }}
         value={value}
         onChange={(e) => setValue(e.currentTarget.value)}
         onKeyDown={(e) => {
-          if (e.key === 'Enter' && !e.nativeEvent.isComposing) {
+          const { key, ctrlKey, metaKey, altKey, shiftKey } = e;
+          const action = consoleInputKey({ key, ctrlKey, metaKey, altKey, shiftKey, isComposing: e.nativeEvent.isComposing });
+          if (action === 'submit') {
             e.preventDefault();
             onSubmit(value);
             setValue('');
+          } else if (action === 'end' && onEnd) {
+            e.preventDefault();
+            endInput(onEnd);
           }
         }}
         leftSection={<IconChevronRight size={14} />}
@@ -90,9 +115,39 @@ function InputLine({ prompt, onSubmit }: { prompt: string | null; onSubmit: (lin
         autoComplete="off"
         spellCheck={false}
       />
-    </Box>
+      {onEnd && (
+        <Tooltip
+          multiline
+          maw={260}
+          label={
+            <>
+              Tell your program there&apos;s no more input, for programs that read until the input ends (
+              <Kbd size="xs">Ctrl</Kbd> + <Kbd size="xs">D</Kbd>)
+            </>
+          }
+        >
+          <Button size="xs" variant="default" style={{ flexShrink: 0 }} onClick={() => endInput(onEnd)} aria-keyshortcuts="Control+D">
+            End input
+          </Button>
+        </Tooltip>
+      )}
+    </Group>
   );
 }
+
+/** The transcript text. Memoized: it only re-renders when the output changes, not on every phase change. */
+const ConsoleText = memo(function ConsoleText({ segments, hidden }: { segments: ConsoleSegment[]; hidden: boolean }) {
+  return (
+    <pre className={classes.consoleText}>
+      {hidden && <span className={classes.system}>{'… earlier output hidden\n'}</span>}
+      {segments.map((s) => (
+        <span key={s.key} className={classes[s.stream]}>
+          {s.text}
+        </span>
+      ))}
+    </pre>
+  );
+});
 
 function ErrorFooter({ outcome, onGoToLine }: { outcome: RunOutcome; onGoToLine?: (line: number, column?: number) => void }) {
   const [showDetails, setShowDetails] = useState(false);
@@ -177,6 +232,7 @@ export function ConsolePanel({
   phase,
   inputPrompt = null,
   onSubmitInput,
+  onEndInput,
   outcome,
   loadingMessage,
   onGoToLine,
@@ -186,7 +242,7 @@ export function ConsolePanel({
 }: ConsolePanelProps) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const stickToBottom = useRef(true);
-  const segments = useMemo(() => mergeChunks(output), [output]);
+  const { segments, hidden } = useMemo(() => tailSegments(output, MAX_CONSOLE_SEGMENTS), [output]);
   const waiting = phase === 'waiting-input' && onSubmitInput != null;
   const showOutcome = phase == null && outcome != null;
   const empty = segments.length === 0 && phase == null && !showOutcome;
@@ -234,16 +290,8 @@ export function ConsolePanel({
                   </Text>
                 </Group>
               )}
-              {segments.length > 0 && (
-                <pre className={classes.consoleText}>
-                  {segments.map((s, i) => (
-                    <span key={i} className={classes[s.stream]}>
-                      {s.text}
-                    </span>
-                  ))}
-                </pre>
-              )}
-              {waiting && <InputLine prompt={inputPrompt} onSubmit={onSubmitInput} />}
+              {segments.length > 0 && <ConsoleText segments={segments} hidden={hidden} />}
+              {waiting && <InputLine prompt={inputPrompt} onSubmit={onSubmitInput} onEnd={onEndInput} />}
               {showOutcome && (
                 <div className={classes.consoleFooter}>
                   <OutcomeFooter outcome={outcome} onGoToLine={onGoToLine} />

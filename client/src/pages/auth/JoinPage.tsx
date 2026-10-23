@@ -7,7 +7,7 @@ import { Link, useNavigate, useParams } from 'react-router';
 import { useRegister } from '../../api/auth';
 import { useJoinClass } from '../../api/classes';
 import { fieldErrors } from '../../api/client';
-import { useAuth } from '../../auth/AuthProvider';
+import { useAuth, useSignOut } from '../../auth/AuthProvider';
 import { notifyError, notifySuccess } from '../../components/notify';
 import { PageLoader } from '../../components/QueryState';
 import { ServerUnreachable } from '../../components/ServerUnreachable';
@@ -174,11 +174,11 @@ function RegisterFlow({ initialCode, onRegistering }: { initialCode: string; onR
 }
 
 function SignedInAs({ user }: { user: User }) {
-  const { logout } = useAuth();
+  const signOut = useSignOut();
   return (
     <>
       Signed in as {user.name} (@{user.username}). Not you?{' '}
-      <Anchor component="button" type="button" fw={600} onClick={() => void logout()}>
+      <Anchor component="button" type="button" fw={600} onClick={() => void signOut()}>
         Sign out
       </Anchor>
     </>
@@ -234,7 +234,7 @@ function StudentJoin({ user, initialCode }: { user: User; initialCode: string })
 }
 
 function StaffNotice({ user, initialCode }: { user: User; initialCode: string }) {
-  const { logout } = useAuth();
+  const signOut = useSignOut();
   const state = useClassCode(initialCode);
   return (
     <AuthCard title="Class codes are for students" subtitle="Teachers and admins can't join classes with a code." footer={<SignedInAs user={user} />}>
@@ -250,7 +250,7 @@ function StaffNotice({ user, initialCode }: { user: User; initialCode: string })
         <Button component={Link} to="/dashboard" fullWidth size="md" leftSection={<IconLayoutDashboard size={18} />}>
           Go to dashboard
         </Button>
-        <Button variant="default" fullWidth size="md" leftSection={<IconLogout size={18} />} onClick={() => void logout()}>
+        <Button variant="default" fullWidth size="md" leftSection={<IconLogout size={18} />} onClick={() => void signOut()}>
           Sign out
         </Button>
       </Stack>

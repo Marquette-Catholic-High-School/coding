@@ -5,6 +5,7 @@ import { useCreateClass } from '../../api/classes';
 import { fieldErrors } from '../../api/client';
 import { notifyError, notifySuccess } from '../../components/notify';
 import { ClassLanguagesSelect } from './ClassLanguagesSelect';
+import { validateClassLanguages } from './classForm';
 
 /** "Create class" modal; on success it opens the new class on its Students tab. */
 export function CreateClassModal({ opened, onClose }: { opened: boolean; onClose: () => void }) {
@@ -15,6 +16,7 @@ export function CreateClassModal({ opened, onClose }: { opened: boolean; onClose
     initialValues: { name: '', description: '', languageIds: [] as string[] },
     validate: {
       name: (value) => (value.trim() ? null : 'Give your class a name'),
+      languageIds: validateClassLanguages,
     },
   });
 
@@ -64,7 +66,7 @@ export function CreateClassModal({ opened, onClose }: { opened: boolean; onClose
             key={form.key('description')}
             {...form.getInputProps('description')}
           />
-          <ClassLanguagesSelect key={form.key('languageIds')} {...form.getInputProps('languageIds')} />
+          <ClassLanguagesSelect required key={form.key('languageIds')} {...form.getInputProps('languageIds')} />
           <Group justify="flex-end" gap="sm">
             <Button variant="default" onClick={close}>
               Cancel

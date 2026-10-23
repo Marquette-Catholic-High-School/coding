@@ -4,27 +4,17 @@ import { IconClipboardList, IconPlus, IconSettings, IconUsers } from '@tabler/ic
 import { Link, useSearchParams } from 'react-router';
 import { useClass } from '../../api/classes';
 import { useCurrentUser } from '../../auth/AuthProvider';
-import { BADGE_NO_SHRINK } from '../../components/badges';
+import { ArchivedBadge, BADGE_NO_SHRINK, JoiningOffBadge, TabCountBadge } from '../../components/badges';
 import { CopyIconButton } from '../../components/CopyIconButton';
 import { PageHeader } from '../../components/PageHeader';
 import { QueryState } from '../../components/QueryState';
 import { usePageTitle } from '../../hooks/usePageTitle';
 import { ClassAssignmentsTab } from './ClassAssignmentsTab';
-import { ArchivedBadge, JoiningOffBadge } from './classBadges';
 import { ClassSettingsTab } from './ClassSettingsTab';
 import { ClassStudentsTab } from './ClassStudentsTab';
 
 const TABS = ['assignments', 'students', 'settings'] as const;
 type Tab = (typeof TABS)[number];
-
-function TabCount({ count }: { count: number }) {
-  if (!count) return null;
-  return (
-    <Badge size="xs" variant="light" circle>
-      {count}
-    </Badge>
-  );
-}
 
 /** Big header chip with the class code and a copy button. */
 function JoinCodeChip({ code }: { code: string }) {
@@ -86,10 +76,10 @@ function ClassView({ cls }: { cls: ClassSummary }) {
       />
       <Tabs value={tab} onChange={setTab} keepMounted={false}>
         <Tabs.List mb="lg">
-          <Tabs.Tab value="assignments" leftSection={<IconClipboardList size={16} />} rightSection={<TabCount count={cls.assignmentCount} />}>
+          <Tabs.Tab value="assignments" leftSection={<IconClipboardList size={16} />} rightSection={<TabCountBadge count={cls.assignmentCount} />}>
             Assignments
           </Tabs.Tab>
-          <Tabs.Tab value="students" leftSection={<IconUsers size={16} />} rightSection={<TabCount count={cls.studentCount} />}>
+          <Tabs.Tab value="students" leftSection={<IconUsers size={16} />} rightSection={<TabCountBadge count={cls.studentCount} />}>
             Students
           </Tabs.Tab>
           <Tabs.Tab value="settings" leftSection={<IconSettings size={16} />}>

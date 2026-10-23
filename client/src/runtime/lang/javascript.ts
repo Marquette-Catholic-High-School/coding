@@ -1,11 +1,14 @@
 // JavaScript runner. Student code runs in this worker as the body of an async function whose parameters shadow
 // console, input(), prompt(), timers and the worker globals a program must not touch. Top-level await works, and
-// a run lasts until the program's timers and fetches have finished (the main thread's timeout or Stop ends
-// programs that never finish, e.g. an uncleared setInterval).
+// a run lasts until the program's timers have finished (the main thread's timeout or Stop ends programs that never
+// finish, e.g. an uncleared setInterval). Programs share the worker's realm, so they can change built-ins and leave
+// callbacks behind: every run reports `recycle` and the worker is replaced before the next program. Network APIs
+// are blocked before the program starts (see network.ts).
 
 import type { RunError } from '../types';
 import { errorHeadline, formatConsoleTable, formatLogArgs, inspect, type InspectOptions } from './inspect';
 import { failure, OK, type LangResult, type LanguageRunner, type RunIO } from './io';
+import { blockNetwork, networkBlocked } from './network';
 import {
   engineSyntaxLocation,
   formatStackFrame,
@@ -46,7 +49,6 @@ const realSetTimeout = globalThis.setTimeout.bind(globalThis) as unknown as Time
 const realSetInterval = globalThis.setInterval.bind(globalThis) as unknown as TimerFn;
 const realClearTimeout = globalThis.clearTimeout.bind(globalThis) as (id: number) => void;
 const realClearInterval = globalThis.clearInterval.bind(globalThis) as (id: number) => void;
-const realFetch = typeof globalThis.fetch === 'function' ? globalThis.fetch.bind(globalThis) : null;
 
 type Stream = 'stdout' | 'stderr';
 type Callback = (...args: unknown[]) => unknown;
@@ -186,11 +188,10 @@ function createConsole(write: (stream: Stream, text: string) => void) {
   };
 }
 
-/** One run: tracks timers and pending fetches so the run ends when the program has nothing left to do. */
+/** One run: tracks timers so the run ends when the program has nothing left to do. */
 class Session {
   private active = true;
   private readonly timers = new Set<number>();
-  private pendingOps = 0;
   private failure: { error: unknown } | null = null;
   private exitCode: number | null = null;
   private stuck = false;
@@ -199,7 +200,6 @@ class Session {
   constructor(private readonly io: RunIO) {}
 
   async run(program: Program, lineCount: number): Promise<LangResult> {
-    const globalsBefore = new Set(Reflect.ownKeys(globalThis));
     const onRejection = (event: PromiseRejectionEvent) => {
       event.preventDefault();
       this.fail(event.reason);
@@ -233,16 +233,6 @@ class Session {
       this.timers.clear();
       removeEventListener('unhandledrejection', onRejection);
       removeEventListener('error', onError);
-      // Undeclared assignments (`x = 5`) create globals; remove them so the next run starts clean.
-      const scope = globalThis as unknown as Record<PropertyKey, unknown>;
-      for (const key of Reflect.ownKeys(globalThis)) {
-        if (globalsBefore.has(key)) continue;
-        try {
-          delete scope[key];
-        } catch {
-          // Non-configurable; nothing more we can do.
-        }
-      }
     }
     if (this.exitCode !== null) {
       return this.exitCode === 0 ? OK : failure({ message: `The program stopped with exit code ${this.exitCode}.` });
@@ -277,7 +267,7 @@ class Session {
     const macrotask = () => new Promise<void>((resolve) => realSetTimeout(resolve, 0));
     for (;;) {
       if (this.finished) return;
-      if (this.timers.size > 0 || this.pendingOps > 0) {
+      if (this.timers.size > 0) {
         await new Promise<void>((resolve) => {
           this.wake = resolve;
         });
@@ -285,7 +275,7 @@ class Session {
       }
       // Nothing scheduled: let pending promise callbacks run (they may start new timers), then look again.
       await macrotask();
-      if (this.finished || this.timers.size > 0 || this.pendingOps > 0) continue;
+      if (this.finished || this.timers.size > 0) continue;
       if (!mainSettled()) this.stuck = true;
       return;
     }
@@ -463,14 +453,7 @@ class Session {
       setInterval: (callback: unknown, delay?: unknown, ...args: unknown[]) => this.setTimer(true, callback, delay, args),
       clearTimeout: (id: unknown) => this.clearTimer(id),
       clearInterval: (id: unknown) => this.clearTimer(id),
-      fetch: (...args: Parameters<typeof fetch>) => {
-        if (!realFetch) return Promise.reject(new Error('fetch is not available here.'));
-        this.pendingOps++;
-        return realFetch(...args).finally(() => {
-          this.pendingOps--;
-          this.notify();
-        });
-      },
+      fetch: networkBlocked,
       postMessage: undefined,
       close: undefined,
       importScripts: undefined,
@@ -482,16 +465,18 @@ class Session {
 
 /**
  * Runs JavaScript. `lineSource` is the code line numbers should refer to (the TypeScript source when `code` was
- * produced by stripping types — sucrase keeps lines in place).
+ * produced by stripping types — sucrase keeps lines in place). The result always asks for a new worker.
  */
 export async function runJavaScript(code: string, io: RunIO, lineSource: string = code): Promise<LangResult> {
   let program: Program;
   try {
     program = new AsyncFunction(...SHIM_NAMES, wrapProgram(code));
   } catch (err) {
-    return failure(await syntaxError(err, code));
+    return { ...failure(await syntaxError(err, code)), recycle: true };
   }
-  return new Session(io).run(program, lineCountOf(lineSource));
+  blockNetwork();
+  const result = await new Session(io).run(program, lineCountOf(lineSource));
+  return { ...result, recycle: true };
 }
 
 export const javascriptRunner: LanguageRunner = {

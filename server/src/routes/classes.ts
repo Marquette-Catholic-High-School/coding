@@ -13,6 +13,7 @@ import { currentUser, isStaff, requireAuth, requireStaff } from '../auth';
 import { db, nowIso, type ClassRow } from '../db';
 import { badRequest, notFound, parseBody, parseId } from '../http';
 import { CLASS_SELECT, toClassSummary, type ClassQueryRow } from '../mappers';
+import { checkJoinCodeAttempts, recordJoinCodeMiss } from '../rateLimit';
 
 export const router = Router();
 
@@ -93,8 +94,10 @@ router.post('/classes/join', requireAuth, (req, res) => {
   const user = currentUser(req);
   if (isStaff(user)) throw badRequest("Teachers and admins can't join classes as students");
   const { joinCode } = parseBody(joinClassSchema, req.body);
+  checkJoinCodeAttempts(req, res, 'joinCode');
   const cls = db.prepare('SELECT * FROM classes WHERE join_code = ?').get(joinCode) as ClassRow | undefined;
   if (!cls) {
+    recordJoinCodeMiss(req);
     const msg = "We couldn't find a class with that code. Check it with your teacher.";
     throw badRequest(msg, { joinCode: msg });
   }

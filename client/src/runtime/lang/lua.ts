@@ -42,8 +42,8 @@ end
 
 local buffer = ""
 
-local function fill(wait)
-  local line = readline(wait)
+local function fill()
+  local line = readline()
   if line == nil then return false end
   buffer = buffer .. line .. "\n"
   return true
@@ -57,7 +57,7 @@ local function readline_fmt(keep_newline)
       buffer = buffer:sub(i + 1)
       return s
     end
-    if not fill(true) then
+    if not fill() then
       if buffer == "" then return nil end
       local s = buffer
       buffer = ""
@@ -82,7 +82,7 @@ local function readnumber()
       break
     end
     buffer = ""
-    if not fill(true) then return nil end
+    if not fill() then return nil end
   end
   for _, pattern in ipairs(NUMBER_PATTERNS) do
     local text = buffer:match(pattern)
@@ -99,11 +99,11 @@ end
 
 local function readchars(n)
   if n <= 0 then
-    if buffer ~= "" or fill(true) then return "" end
+    if buffer ~= "" or fill() then return "" end
     return nil
   end
   while #buffer < n do
-    if not fill(true) then break end
+    if not fill() then break end
   end
   if buffer == "" then return nil end
   local s = buffer:sub(1, n)
@@ -112,7 +112,7 @@ local function readchars(n)
 end
 
 local function readall()
-  while fill(false) do end
+  while fill() do end
   local s = buffer
   buffer = ""
   return s
@@ -269,7 +269,7 @@ export const luaRunner: LanguageRunner = {
       engine.global.set('__codeclass_write', (stream: unknown, text: unknown) => {
         io.write(stream === 2 ? 'stderr' : 'stdout', String(text));
       });
-      engine.global.set('__codeclass_readline', (wait: unknown) => io.readLine({ wait: wait !== false }) ?? undefined);
+      engine.global.set('__codeclass_readline', () => io.readLine() ?? undefined);
       engine.global.set('__codeclass_report', (kind: unknown, message: unknown, extra: unknown) => {
         report = { kind: String(kind), message: message == null ? '' : String(message), extra };
       });

@@ -6,15 +6,15 @@ import { ServerUnreachable } from '../components/ServerUnreachable';
 import { NotFoundCard } from '../components/NotFoundCard';
 import { useAuth } from './AuthProvider';
 
-/** Layout route: renders children only when signed in, otherwise redirects to /login?next=… */
+/** Layout route: renders children only when signed in, otherwise redirects to /login?next=… (plain /login after signing out). */
 export function RequireAuth({ children }: { children?: ReactNode }) {
-  const { user, isLoading, error, refresh } = useAuth();
+  const { user, isLoading, error, refresh, signedOut } = useAuth();
   const location = useLocation();
   if (isLoading) return <PageLoader label="Loading…" fullPage />;
   if (!user && error) return <ServerUnreachable onRetry={() => void refresh()} />;
   if (!user) {
     const next = location.pathname + location.search;
-    return <Navigate to={next === '/' ? '/login' : `/login?next=${encodeURIComponent(next)}`} replace />;
+    return <Navigate to={signedOut || next === '/' ? '/login' : `/login?next=${encodeURIComponent(next)}`} replace />;
   }
   return children ?? <Outlet />;
 }

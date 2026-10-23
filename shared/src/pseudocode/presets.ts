@@ -28,6 +28,8 @@ const OPERATOR_SYMBOLS = new Set([
   '+', '-', '*', '/', '^', '&', '=', '<', '>', '(', ')', '[', ']', '{', '}', ',', ':', ';', '.', '←', '≠', '≤', '≥',
   '<=', '>=', '==', '!=', '<>', '<-', ':=',
 ]);
+/** Symbols a value can follow, so `<symbol>-` and `<symbol>+` appear in ordinary code: 5--3, x=-1, (-2), [1,-2]. */
+const BEFORE_VALUE = new Set(['+', '-', '*', '/', '^', '&', '=', '<', '>', '≠', '≤', '≥', '←', '(', '[', ',']);
 const MAX_SPELLINGS = 8;
 const MAX_WORD_LENGTH = 40;
 
@@ -152,6 +154,7 @@ function aqaConfig(): PseudocodeConfig {
       endProcedure: ['ENDPROCEDURE'],
       true: ['True'],
       false: ['False'],
+      constant: ['constant'],
     }),
     constructs: constructs([
       'output', 'input', 'variables', 'if', 'else', 'while', 'repeatUntil', 'for', 'forEach', 'logic', 'modDiv', 'lists',
@@ -330,8 +333,9 @@ export const PSEUDOCODE_PRESETS: PseudocodePreset[] = [
     id: 'cambridge',
     name: 'Cambridge IGCSE / A Level',
     description:
-      'Cambridge IGCSE (0478) and AS & A Level (9618) style: OUTPUT and INPUT, ←, IF … THEN … ELSE … ENDIF, ' +
-      'WHILE … DO … ENDWHILE, REPEAT … UNTIL, FOR … ← … TO … STEP … NEXT, PROCEDURE … ENDPROCEDURE with CALL, ' +
+      'Cambridge IGCSE (0478) and AS & A Level (9618) style: DECLARE (ARRAY[1:n] OF … makes a list), CONSTANT, ' +
+      'OUTPUT and INPUT, ←, IF … THEN … ELSE … ENDIF, WHILE … DO … ENDWHILE, REPEAT … UNTIL, ' +
+      'FOR … ← … TO … STEP … NEXT, PROCEDURE … ENDPROCEDURE with CALL and BYREF / BYVAL, ' +
       'FUNCTION … RETURNS … ENDFUNCTION, MOD and DIV, LENGTH, UCASE, LCASE, SUBSTRING and & to join strings.',
     config: cambridgeConfig(),
     sample: CAMBRIDGE_SAMPLE,
@@ -340,7 +344,7 @@ export const PSEUDOCODE_PRESETS: PseudocodePreset[] = [
     id: 'aqa',
     name: 'AQA GCSE',
     description:
-      'AQA GCSE Computer Science (8525) pseudo-code: OUTPUT, USERINPUT, ←, IF … THEN … ELSE IF … ENDIF, ' +
+      'AQA GCSE Computer Science (8525) pseudo-code: OUTPUT, USERINPUT, ←, constant, IF … THEN … ELSE IF … ENDIF, ' +
       'WHILE … ENDWHILE, REPEAT … UNTIL, FOR … ← … TO … ENDFOR, FOR … IN, SUBROUTINE … ENDSUBROUTINE, LEN, ' +
       'RANDOM_INT, # comments and arrays that start at 0.',
     config: aqaConfig(),
@@ -380,6 +384,14 @@ function commentPrefixProblem(prefix: string): string | null {
   if (/\s/.test(prefix)) return `Comment symbol "${prefix}" can't contain spaces.`;
   if (/["'“”‘’]/.test(prefix)) return `Comment symbol "${prefix}" can't contain quote marks.`;
   if (OPERATOR_SYMBOLS.has(prefix)) return `"${prefix}" can't start comments because it's already an operator.`;
+  // The lexer looks for comments before operators, so a prefix must not swallow code that is valid without spaces.
+  const longer = [...OPERATOR_SYMBOLS].find((op) => op.length > prefix.length && op.startsWith(prefix));
+  if (longer) return `"${prefix}" can't start comments because the "${longer}" operator starts with it.`;
+  const [first, second] = [prefix[0]!, prefix[1]];
+  if ((second === '-' || second === '+') && BEFORE_VALUE.has(first)) {
+    const example = first === '(' ? `(${second}2)` : first === '[' ? `[${second}2]` : first === ',' ? `(1,${second}2)` : `5${first}${second}2`;
+    return `"${prefix}" can't start comments because code like ${example} uses those symbols.`;
+  }
   return null;
 }
 
@@ -493,6 +505,18 @@ export function validatePseudocodeConfig(config: PseudocodeConfig): string[] {
       continue;
     }
     if (list.length > MAX_SPELLINGS) add(`"${info.label}" can have at most ${MAX_SPELLINGS} spellings.`);
+    const valid = list.filter((item): item is string => typeof item === 'string' && SPELLING.test(item));
+    for (const short of valid) {
+      for (const long of valid) {
+        // The lexer joins words greedily, so the longer spelling swallows a name written after the shorter one.
+        if (!key(long).startsWith(`${key(short)} `)) continue;
+        const name = long.split(' ')[short.split(' ').length]!;
+        add(
+          `"${long}" and "${short}" are both spellings of "${info.label}", so ${short} followed by a name called ` +
+            `${name} would be read as ${long}. Keep just one of them.`,
+        );
+      }
+    }
     for (const item of list) {
       if (typeof item !== 'string' || !SPELLING.test(item)) {
         add(

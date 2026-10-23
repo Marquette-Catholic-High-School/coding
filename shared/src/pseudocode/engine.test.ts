@@ -297,7 +297,18 @@ describe('operators and values', () => {
   });
 
   it('compares text alphabetically and values of different types as unequal', () => {
-    expect(output('OUTPUT "apple" < "banana", "b" >= "a", "5" = 5, [1, [2]] = [1, [2]], TRUE = TRUE')).toBe('TRUE TRUE FALSE TRUE TRUE\n');
+    expect(output('OUTPUT "apple" < "banana", "b" >= "a", "a" = 1, [1, [2]] = [1, [2]], TRUE = TRUE, "TRUE" = TRUE')).toBe(
+      'TRUE TRUE FALSE TRUE TRUE FALSE\n',
+    );
+  });
+
+  it('treats a number and text that looks like that number as equal, but only for = and its opposites', () => {
+    expect(output('OUTPUT "5" = 5, 5 = "5.0", 1 = " 1 ", 7 = "007", "1" = 2, 0 = "", 0 = "zero"')).toBe('TRUE TRUE TRUE TRUE FALSE FALSE FALSE\n');
+    expect(output('OUTPUT 5 != "5", 5 <> "6", 5 ≠ "5", "1" = "01"')).toBe('FALSE TRUE FALSE FALSE\n');
+    expect(output('OUTPUT [1] = ["1"], [1, 2] = [1, 2]')).toBe('FALSE TRUE\n');
+    const e = failure('OUTPUT 5 < "6"');
+    expect(e.message).toBe('You can\'t compare a number with text using "<".');
+    expect(e.hint).toBe('"6" is text because of its quote marks — write 6 to compare numbers. (Typed input that looks like a number becomes a number.)');
   });
 
   it('short-circuits AND / OR and supports NOT', () => {
@@ -392,8 +403,13 @@ describe('operators and values', () => {
   });
 
   it('uses the configured comment prefixes', () => {
-    const cfg = config({ commentPrefixes: ['#', '--'] });
-    expect(output(lines('# heading', 'OUTPUT 1 -- trailing', 'OUTPUT 5 - 2'), cfg)).toBe('1\n3\n');
+    const cfg = config({ commentPrefixes: ['#', '%%'] });
+    expect(output(lines('# heading', 'OUTPUT 1 %% trailing', 'OUTPUT 5 - 2'), cfg)).toBe('1\n3\n');
+  });
+
+  it('ignores stored comment symbols that would swallow operators (! in !=, -- in 5--3)', () => {
+    expect(output(lines('OUTPUT 5 != 3', 'OUTPUT 5--3', '# note'), config({ commentPrefixes: ['!', '--', '#'] }))).toBe('TRUE\n8\n');
+    expect(output('OUTPUT 5 != 3 // note', config({ commentPrefixes: ['!'] }))).toBe('TRUE\n');
   });
 });
 
@@ -516,13 +532,14 @@ describe('keywords, aliases and case', () => {
     expect(output('output ← 3\nOUTPUT output', cfg)).toBe('3\n');
   });
 
-  it('reserves every keyword spelling, even of locked constructs', () => {
-    const e = failure('SET to TO 1');
-    expect(e.message).toBe('"to" is a special word in this language, so it can\'t be used as a name.');
+  it('reserves every keyword spelling that starts a statement or a value, even of locked constructs', () => {
     const starter = config({}, 'starter');
     const e2 = failure('while ← 5', starter);
     expect(e2.message).toBe('"while" is a special word in this language, so it can\'t be used as a name.');
-    expect(failure('FOR step FROM 1 TO 2\nEND FOR').message).toContain('"step" is a special word');
+    expect(failure('if ← 1').message).toContain('"if" is a special word');
+    expect(failure('INPUT output').message).toContain('"output" is a special word');
+    expect(failure('FOR end if FROM 1 TO 2\nEND FOR').message).toContain('"end if" is a special word');
+    expect(failure('mod ← 1').message).toContain('"mod" is a special word');
   });
 
   it('uses renamed built-ins and suggests the new name for the old one', () => {
@@ -682,6 +699,13 @@ describe('built-in functions', () => {
     expect(failure('OUTPUT UPPER(5)').message).toBe('UPPER needs some text, but got the number 5.');
   });
 
+  it('counts an emoji as one character in LENGTH, [ ], SUBSTRING and FOR EACH', () => {
+    expect(output('OUTPUT LENGTH("😀"), LENGTH("hi😀"), "😀x"[1], "a😀b"[3], SUBSTRING("😀x", 1, 1), SUBSTRING("a😀😀b", 2, 2)')).toBe('1 3 😀 b 😀 😀😀\n');
+    expect(output('FOR EACH c IN "hi😀"\n  OUTPUT c\nEND FOR')).toBe('h\ni\n😀\n');
+    expect(failure('OUTPUT "😀"[2]').message).toBe("Position 2 doesn't exist — the text has 1 character (position 1).");
+    expect(failure('OUTPUT SUBSTRING("😀", 3, 1)').message).toBe("SUBSTRING can't start at position 3 — the text has 1 character (positions 1 to 1).");
+  });
+
   it('gives RANDOM inclusive whole numbers using options.random', () => {
     const lowest = run('OUTPUT RANDOM(1, 6)', CLASSROOM, [], { random: () => 0 });
     const highest = run('OUTPUT RANDOM(1, 6)', CLASSROOM, [], { random: () => 0.999999 });
@@ -747,6 +771,196 @@ describe('input', () => {
   it('needs a variable after the INPUT statement', () => {
     expect(checkPseudocode('INPUT', CLASSROOM)[0]!.message).toBe('INPUT needs a variable name after it.');
   });
+
+  it('matches numeric input against quoted text with = (menus, PINs, quiz answers)', () => {
+    const menu = lines('INPUT choice', 'IF choice = "1" THEN', '  OUTPUT "one"', 'ELSE IF choice = "2" THEN', '  OUTPUT "two"', 'ELSE', '  OUTPUT "Invalid choice"', 'END IF');
+    expect(output(menu, CLASSROOM, ['1'])).toBe('one\n');
+    expect(output(menu, CLASSROOM, ['2'])).toBe('two\n');
+    expect(output(menu, CLASSROOM, ['x'])).toBe('Invalid choice\n');
+    expect(output('INPUT c\nOUTPUT c = "1", c <> "1", c ≠ "2"', CLASSROOM, ['1'])).toBe('TRUE FALSE TRUE\n');
+    expect(output('INPUT code\nOUTPUT code = "007"', CLASSROOM, ['007'])).toBe('TRUE\n');
+    const aqa = config({}, 'aqa');
+    expect(output(lines('p ← USERINPUT', 'IF p = \'1234\' THEN', "  OUTPUT 'ok'", 'ELSE', "  OUTPUT 'wrong'", 'ENDIF'), aqa, ['1234'])).toBe('ok\n');
+    const apCsp = config({}, 'ap-csp');
+    expect(output(lines('answer ← INPUT()', 'IF (answer = "42") {', '  DISPLAY("right")', '} ELSE {', '  DISPLAY("wrong")', '}'), apCsp, ['42'])).toBe('right ');
+  });
+
+  it('explains ordering comparisons between numeric input and quoted numbers', () => {
+    const e = failure('INPUT age\nIF age >= "18" THEN\nEND IF', CLASSROOM, ['15']);
+    expect(e).toMatchObject({ phase: 'runtime', line: 2, column: 8, message: 'You can\'t compare a number with text using ">=".' });
+    expect(e.hint).toBe('"18" is text because of its quote marks — write 18 to compare numbers. (Typed input that looks like a number becomes a number.)');
+    expect(failure('s ← "18"\nOUTPUT 5 < s').hint).toBe('"18" is text. Turn it into a number first with NUM("18").');
+    expect(failure('OUTPUT 5 < "abc"').hint).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Exam-board declarations and parameters
+// ---------------------------------------------------------------------------------------------------------------------
+
+describe('declarations, constants and parameters', () => {
+  const cambridge = config({}, 'cambridge');
+  const aqa = config({}, 'aqa');
+
+  it('accepts DECLARE for a plain variable as a statement that does nothing', () => {
+    expect(output(lines('DECLARE Total : INTEGER', 'DECLARE A, B : STRING', 'DECLARE Flag', 'Total ← 5', 'OUTPUT Total'), cambridge)).toBe('5\n');
+    expect(failure('DECLARE Total : INTEGER\nOUTPUT Total', cambridge).message).toBe('I don\'t know a variable called "Total".');
+    expect(output('DECLARE x : INTEGER\nx ← 1\nOUTPUT x')).toBe('1\n');
+  });
+
+  it('makes a sized list from DECLARE … ARRAY[low:high] OF type', () => {
+    const src = lines('DECLARE Marks : ARRAY[1:3] OF INTEGER', 'FOR Index ← 1 TO 3', '  INPUT Marks[Index]', 'NEXT Index', 'OUTPUT Marks[2], LENGTH(Marks)');
+    expect(output(src, cambridge, ['5', '6', '7'])).toBe('63\n');
+    expect(output(lines('DECLARE N : ARRAY[1:2] OF STRING', 'DECLARE F : ARRAY[1:2] OF BOOLEAN', 'DECLARE R : ARRAY[1:2] OF REAL', 'OUTPUT N, F, R'), cambridge)).toBe(
+      '["", ""][FALSE, FALSE][0, 0]\n',
+    );
+    expect(output(lines('Size ← 4', 'DECLARE L : ARRAY[1:Size]', 'DECLARE E : ARRAY[1:0] OF INTEGER', 'OUTPUT LENGTH(L), LENGTH(E)'), cambridge)).toBe('40\n');
+    expect(output(lines('DECLARE A, B : ARRAY[1:2] OF INTEGER', 'A[1] ← 9', 'OUTPUT A, B'), cambridge)).toBe('[9, 0][0, 0]\n');
+  });
+
+  it('makes 2-D lists and reads and writes them with [row, column]', () => {
+    const src = lines('DECLARE Board : ARRAY[1:2, 1:3] OF CHAR', 'Board[2, 3] ← "X"', 'OUTPUT Board[2, 3], Board[2][3], LENGTH(Board), LENGTH(Board[1])', 'OUTPUT Board');
+    expect(output(src, cambridge)).toBe('XX23\n[["", "", ""], ["", "", "X"]]\n');
+    expect(output('g ← [[1, 2], [3, 4]]\ng[1, 2] ← 7\nOUTPUT g[1, 2], g')).toBe('7 [[1, 7], [3, 4]]\n');
+  });
+
+  it('explains mistakes in DECLARE', () => {
+    expect(checkPseudocode('DECLARE : INTEGER', cambridge)[0]!.message).toBe('DECLARE needs a variable name next, for example: DECLARE total : INTEGER');
+    expect(checkPseudocode('DECLARE x ← 5', cambridge)[0]!.message).toBe('DECLARE only names a variable — give it a value on its own line.');
+    expect(checkPseudocode('DECLARE x : 5', cambridge)[0]!.message).toBe('Put a type after the colon, like INTEGER or STRING.');
+    expect(checkPseudocode('DECLARE x : ARRAY OF INTEGER', cambridge)[0]!.message).toBe('ARRAY needs its first and last positions in [ ].');
+    expect(checkPseudocode('DECLARE x : ARRAY[1 TO 3] OF INTEGER', cambridge)[0]!.message).toBe('Put a colon between the first and last positions, like ARRAY[1:5].');
+    expect(checkPseudocode('DECLARE x : ARRAY[1:3] OF', cambridge)[0]!.message).toBe('Put the type of the items after OF.');
+    expect(failure('DECLARE x : ARRAY[3:1] OF INTEGER', cambridge).message).toBe('The last position (1) must not be before the first position (3).');
+    expect(failure('DECLARE x : ARRAY[1:2.5] OF INTEGER', cambridge).message).toBe('The last position of an ARRAY must be a whole number, but it\'s 2.5.');
+    expect(checkPseudocode('DECLARE x : ARRAY[1:3] OF INTEGER', withConstructs({ lists: false }, 'cambridge'))[0]!.message).toBe("You haven't learned about lists yet.");
+    expect(checkPseudocode('DECLARE x : INTEGER', withConstructs({ variables: false }))[0]!.message).toBe('You haven\'t learned "DECLARE" yet.');
+  });
+
+  it('treats CONSTANT (Cambridge) and constant (AQA) as an assignment with ← or =', () => {
+    expect(output('CONSTANT Pi ← 3.14\nCONSTANT Name = "Ada"\nOUTPUT Pi, Name', cambridge)).toBe('3.14Ada\n');
+    expect(output('constant PI ← 3.141\nOUTPUT PI * 2', aqa)).toBe('6.282\n');
+    expect(output('CONSTANT MAX = 10\nOUTPUT MAX', config({ assignOperators: [] }))).toBe('10\n');
+    expect(checkPseudocode('CONSTANT Pi 3.14', cambridge)[0]!.message).toBe('CONSTANT needs ← and a value after the name.');
+    expect(checkPseudocode('CONSTANT Pi := 3.14', cambridge)[0]!.message).toBe('This language doesn\'t use ":=" to store values.');
+  });
+
+  it('lets teachers rename DECLARE and CONSTANT, and keeps older configs without them working', () => {
+    const renamed = withKeywords({ declare: ['DIM'], constant: ['CONST'] });
+    expect(output('DIM a : ARRAY[1:2] OF INTEGER\nCONST b = 2\nOUTPUT a, b', renamed)).toBe('[0, 0] 2\n');
+    const { declare: _d, constant: _c, ...oldKeywords } = CLASSROOM.keywords;
+    const old = { ...CLASSROOM, keywords: oldKeywords } as unknown as PseudocodeConfig;
+    expect(output('DECLARE n : INTEGER\nCONSTANT k = 3\nOUTPUT k', old)).toBe('3\n');
+  });
+
+  it('copies BYREF parameters back to the caller (until BYVAL), and tolerates BYVAL', () => {
+    const swap = lines(
+      'PROCEDURE Swap(BYREF X : INTEGER, Y : INTEGER)',
+      '  Temp ← X',
+      '  X ← Y',
+      '  Y ← Temp',
+      'ENDPROCEDURE',
+      'A ← 1',
+      'B ← 2',
+      'CALL Swap(A, B)',
+      'OUTPUT A, " ", B',
+      'L ← [10, 20]',
+      'CALL Swap(L[1], L[2])',
+      'OUTPUT L',
+      'CALL Swap(3, 4)',
+    );
+    expect(output(swap, cambridge)).toBe('2 1\n[20, 10]\n');
+    const mixed = lines(
+      'PROCEDURE Change(BYREF A, BYVAL B, BYREF C)',
+      '  A ← A + 1',
+      '  B ← B + 1',
+      '  C ← C + 1',
+      'ENDPROCEDURE',
+      'X ← 0',
+      'Y ← 0',
+      'Z ← 0',
+      'Change(X, Y, Z)',
+      'OUTPUT X, Y, Z',
+    );
+    expect(output(mixed, cambridge)).toBe('101\n');
+    const fn = lines('FUNCTION Bump(BYREF N : INTEGER) RETURNS INTEGER', '  N ← N + 1', '  RETURN N * 10', 'ENDFUNCTION', 'C ← 1', 'OUTPUT Bump(C), C');
+    expect(output(fn, cambridge)).toBe('202\n');
+    expect(output('PROCEDURE P(BYVAL X : INTEGER)\n  X ← 5\nENDPROCEDURE\nX ← 1\nP(X)\nOUTPUT X', cambridge)).toBe('1\n');
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Connector keywords used as names
+// ---------------------------------------------------------------------------------------------------------------------
+
+describe('connector words as names', () => {
+  const apCsp = config({}, 'ap-csp');
+  const cambridge = config({}, 'cambridge');
+  const aqa = config({}, 'aqa');
+
+  it('lets exam-board students use words their board never uses (set, call, step, from, to, times)', () => {
+    expect(output('set ← [1, 2]\nAPPEND(set, 3)\nDISPLAY(set)', apCsp)).toBe('[1, 2, 3] ');
+    expect(output('call ← 1\nstep ← call + 1\nDISPLAY(step)', apCsp)).toBe('2 ');
+    expect(output('PROCEDURE move(from, to)\n{\n  DISPLAY(from + to)\n}\nmove(1, 2)', apCsp)).toBe('3 ');
+    expect(output('times ← 3\nset ← [times]\nOUTPUT times, set', aqa)).toBe('3 [3]\n');
+    expect(output('PROCEDURE Move(from, to)\n  OUTPUT from, to\nENDPROCEDURE\nCALL Move(1, 2)', cambridge)).toBe('12\n');
+  });
+
+  it('accepts them wherever a name is expected', () => {
+    expect(output(lines('SET to TO 5', 'INPUT step', 'INPUT "Again? ", from', 'OUTPUT to, step, from'), CLASSROOM, ['6', '7'])).toBe('Again? 5 6 7\n');
+    expect(output(lines('FOR to ← 1 TO 2', '  OUTPUT to', 'NEXT to'), cambridge)).toBe('1\n2\n');
+    expect(output(lines('FOR step FROM 1 TO 2', '  OUTPUT step', 'END FOR step'))).toBe('1\n2\n');
+    expect(output(lines('FOR EACH in IN [4, 5]', '  OUTPUT in', 'END FOR'))).toBe('4\n5\n');
+    expect(output(lines('FUNCTION times(a, b)', '  RETURN a * b', 'END FUNCTION', 'OUTPUT times(2, 3)', 'then ← [1]', 'then[1] ← 9', 'OUTPUT then'))).toBe('6\n[9]\n');
+    expect(output(lines('PROCEDURE do(BYREF to)', '  to ← to * 2', 'END PROCEDURE', 'x ← 4', 'CALL do(x)', 'OUTPUT x'))).toBe('8\n');
+  });
+
+  it('still reads them as keywords in FOR, REPEAT, SET, IF and WHILE lines', () => {
+    const src = lines(
+      'to ← 3',
+      'step ← 2',
+      'times ← 2',
+      'then ← TRUE',
+      'do ← 1',
+      'FOR i FROM 1 TO to STEP step',
+      '  OUTPUT i',
+      'END FOR',
+      'REPEAT times TIMES',
+      '  OUTPUT "r"',
+      'END REPEAT',
+      'SET x TO to + step',
+      'IF then THEN',
+      '  OUTPUT x',
+      'END IF',
+      'WHILE do < 3 DO',
+      '  do ← do + 1',
+      'END WHILE',
+      'OUTPUT do',
+      'FOR EACH v IN [to, step] DO',
+    );
+    expect(output(src.split('\n').slice(0, -1).join('\n'))).toBe('1\n3\nr\nr\n5\n3\n');
+    expect(output(lines('IF 1 = 1', '  THEN', '    then ← 2', '    OUTPUT then', 'ENDIF'), cambridge)).toBe('2\n');
+  });
+
+  it('keeps the old messages when the word is not used as a name', () => {
+    const syntax = (src: string, cfg = CLASSROOM) => checkPseudocode(src, cfg)[0]!;
+    expect(syntax('IF THEN\nEND IF').message).toBe('I expected a value after "IF", but found "THEN".');
+    expect(syntax('FOR FROM 1 TO 3\nEND FOR').message).toBe('"FROM" is a special word in this language, so it can\'t be used as a name.');
+    expect(syntax('SET TO 5').message).toBe('"TO" is a special word in this language, so it can\'t be used as a name.');
+    expect(syntax('OUTPUT step')).toMatchObject({ message: 'I expected a value after "OUTPUT", but found "step".' });
+    expect(syntax('REPEAT TIMES\nEND REPEAT').message).toBe('I expected a value after "REPEAT", but found "TIMES".');
+    expect(syntax('to = 5').message).toBe('To store a value in a variable, write to ← …');
+    // Variables are case-sensitive, so TO is still the keyword when only "to" is a variable.
+    expect(syntax('to ← 1\nOUTPUT TO').message).toBe('I expected a value after "OUTPUT", but found "TO".');
+  });
+
+  it('explains a counting loop whose variable is called "each"', () => {
+    const e = checkPseudocode('FOR each FROM 1 TO 3\n  OUTPUT each\nEND FOR', CLASSROOM)[0]!;
+    expect(e).toMatchObject({ line: 1, column: 1, endColumn: 9, message: '"FOR each" is read as FOR EACH, so "each" can\'t be the name of the loop variable.' });
+    expect(e.hint).toBe('Choose a different name, for example: FOR i FROM 1 TO 10');
+    expect(checkPseudocode('FOR each ← 1 TO 3\nNEXT each', cambridge)[0]!.message).toContain('"each" can\'t be the name of the loop variable');
+    expect(output('FOR EACH each IN [1, 2]\n  OUTPUT each\nEND FOR')).toBe('1\n2\n');
+  });
 });
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -792,6 +1006,31 @@ describe('limits', () => {
     expect(e.phase).toBe('runtime');
   });
 
+  it('stops a list growing past 10,000,000 items before it uses up the memory', () => {
+    const doubling = failure(lines('l ← [1]', 'REPEAT 100 TIMES', '  l ← l + l', 'END REPEAT'));
+    expect(doubling).toMatchObject({ phase: 'runtime', line: 3, message: 'That list would have more than 10,000,000 items — too many for the computer to handle.' });
+    expect(doubling.hint).toBe('Check for a loop that keeps making a list bigger, like list ← list + list');
+    expect(failure('DECLARE big : ARRAY[1:20000000] OF INTEGER').line).toBe(1);
+    expect(failure('DECLARE big : ARRAY[1:5000, 1:5000] OF INTEGER').message).toContain('more than 10,000,000 items');
+    expect(failure('DECLARE big : ARRAY[1:20000000, 1:0] OF INTEGER').message).toContain('more than 10,000,000 items');
+  });
+
+  it('reports lists nested too deeply to show at the line that shows them, not as recursion', () => {
+    const deep = lines('l ← []', 'REPEAT 100000 TIMES', '  l ← [l]', 'END REPEAT', 'OUTPUT LENGTH(l)', 'OUTPUT l');
+    const r = run(deep);
+    expect(r.out).toBe('1\n');
+    expect(r.error).toMatchObject({ phase: 'runtime', line: 6, message: 'A list in your program has lists inside lists too many levels deep for the computer to handle.' });
+    const inProcedure = lines('PROCEDURE show(x)', '  OUTPUT x', 'END PROCEDURE', ...deep.split('\n').slice(0, 4), 'show(l)');
+    expect(failure(inProcedure)).toMatchObject({ line: 2, message: 'A list in your program has lists inside lists too many levels deep for the computer to handle.' });
+  });
+
+  it('reports text that grows too long at the line that grows it', () => {
+    expect(failure(lines('s ← "ab"', 'REPEAT 100 TIMES', '  s ← s + s', 'END REPEAT', 'OUTPUT LENGTH(s)'))).toMatchObject({
+      phase: 'runtime',
+      message: 'Some text in your program got too long for the computer to handle.',
+    });
+  });
+
   it('runs a 1,000,000-iteration loop in under 2 seconds', () => {
     const started = Date.now();
     const out = output(lines('SET total TO 0', 'FOR i FROM 1 TO 1000000', '  total ← total + i', 'END FOR', 'OUTPUT total'));
@@ -830,7 +1069,8 @@ describe('error messages', () => {
     expect(syntax('x ← 1\nIF x > 0 THEN\n  OUTPUT x\nENDIF').hint).toBe('Did you mean "END IF"?');
     expect(syntax('WHIEL x < 3\nEND WHILE').hint).toBe('Did you mean "WHILE"?');
     expect(syntax('PRINT "hi"').hint).toBe('To show something on the screen, use OUTPUT.');
-    expect(syntax('DECLARE x : INTEGER').hint).toBe("You don't need to declare variables here — just give them a value, like total ← 0");
+    expect(syntax('VAR x : INTEGER').hint).toBe("You don't need to declare variables here — just give them a value, like total ← 0");
+    expect(syntax('DIM marks : ARRAY[1:3] OF INTEGER').hint).toBe('To make a list, give it its starting items, like marks ← [0, 0, 0]');
     expect(syntax('INPUT x', config({}, 'aqa')).hint).toBe('To ask the user to type something, use USERINPUT.');
   });
 
@@ -843,6 +1083,30 @@ describe('error messages', () => {
 
   it('explains a half-typed multi-word keyword', () => {
     expect(syntax('WHILE TRUE\n  END')).toMatchObject({ message: '"END" needs another word after it.', hint: 'Did you mean "END WHILE"?' });
+  });
+
+  it('says that capital letters matter for multi-word keywords in a case-sensitive language', () => {
+    const cs = config({ caseSensitive: true });
+    const capitals = (s: string) => `Did you mean "${s}"? Capital letters matter in this language.`;
+    expect(syntax('IF 1 = 1 THEN\n  OUTPUT 1\nEnd IF', cs)).toMatchObject({ message: 'I don\'t know the word "End".', hint: capitals('END IF'), line: 3 });
+    expect(syntax('IF 1 = 1 THEN\n  OUTPUT 1\nend if', cs).hint).toBe(capitals('END IF'));
+    expect(syntax('WHILE TRUE\n  OUTPUT 1\nend', cs).hint).toBe(capitals('END WHILE'));
+    expect(syntax('IF TRUE THEN\n  WHILE TRUE\n  END WHILE\nEnd while', cs).hint).toBe(capitals('END WHILE'));
+    expect(syntax('IF TRUE THEN\n  OUTPUT 1\nElse IF FALSE THEN\nEND IF', cs).hint).toBe(capitals('ELSE IF'));
+    expect(syntax('IF TRUE THEN\n  OUTPUT 1\nEND If', cs)).toMatchObject({ message: 'I don\'t know the words "END If".', hint: capitals('END IF'), column: 1, endColumn: 7 });
+    expect(syntax('IF TRUE THEN\n  OUTPUT 1\nElse\nEND IF', cs).hint).toBe(capitals('ELSE'));
+  });
+
+  it('says "here" for a connector in the middle of a line, with a hint for the block it is in', () => {
+    expect(syntax('FOR i FROM 1 TO 3 DO\n  OUTPUT i\nEND FOR')).toMatchObject({
+      message: 'I wasn\'t expecting "DO" here.',
+      hint: "FOR lines don't use DO — remove it.",
+      column: 19,
+    });
+    expect(syntax('IF x > 1 DO\nEND IF').hint).toBe('Use THEN after an IF condition instead.');
+    expect(syntax('WHILE x > 1 THEN\nEND WHILE').hint).toBe('Use DO after a WHILE condition instead.');
+    expect(syntax('x ← 1\nIF x > 1 THEN THEN\nEND IF')).toMatchObject({ message: 'I wasn\'t expecting "THEN" here.', hint: 'THEN goes at the end of an IF line, after the condition.' });
+    expect(syntax('DO')).toMatchObject({ message: 'I wasn\'t expecting "DO" at the start of a line.', hint: 'DO goes at the end of a WHILE line.' });
   });
 
   it('reports unclosed blocks at the opening line', () => {
