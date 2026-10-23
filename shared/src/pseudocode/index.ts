@@ -5,6 +5,7 @@ export { runPseudocode, checkPseudocode } from './engine';
 export {
   PSEUDOCODE_PRESETS,
   DEFAULT_PRESET_ID,
+  ASSIGN_OPERATORS,
   createPseudocodeConfig,
   normalizePseudocodeConfig,
   validatePseudocodeConfig,

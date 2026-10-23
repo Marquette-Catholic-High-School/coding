@@ -1,0 +1,44 @@
+/* Language builder styles that Mantine props can't express. */
+
+/* The first spelling of a keyword is the one shown in the word bank, autocomplete and error messages. */
+.primaryPill {
+  background-color: var(--mantine-primary-color-light);
+  color: var(--mantine-primary-color-light-color);
+  font-weight: 600;
+}
+
+.primaryTag {
+  margin-inline-start: 6px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  opacity: 0.85;
+}
+
+/* Topics the class hasn't learned yet stay editable but read as "parked". */
+.lockedCard {
+  border-style: dashed;
+  background-color: light-dark(var(--mantine-color-gray-0), var(--mantine-color-dark-7));
+}
+
+.example {
+  margin: 0;
+  white-space: pre;
+  overflow-x: auto;
+  font-size: var(--mantine-font-size-xs);
+  line-height: 1.55;
+}
+
+.sample {
+  margin: 0;
+  white-space: pre;
+  overflow: hidden;
+  font-size: 11px;
+  line-height: 1.5;
+  max-height: calc(11px * 1.5 * 4 + 2 * var(--mantine-spacing-xs));
+}
+
+.dangerCard {
+  border-color: var(--mantine-color-red-outline);
+}

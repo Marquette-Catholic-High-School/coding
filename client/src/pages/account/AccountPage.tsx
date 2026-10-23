@@ -1,6 +1,186 @@
-// TODO: implemented by the feature build — see docs/ARCHITECTURE.md.
+import { Alert, Avatar, Button, Card, Grid, Group, PasswordInput, Stack, Text, TextInput, Title } from '@mantine/core';
+import { schemaResolver, useForm } from '@mantine/form';
+import { changePasswordSchema, updateProfileSchema, type User } from '@codeclass/shared';
+import { IconAlertTriangle, IconAt, IconDeviceFloppy, IconKey } from '@tabler/icons-react';
+import dayjs from 'dayjs';
+import { useChangePassword, useUpdateProfile } from '../../api/auth';
+import { fieldErrors } from '../../api/client';
+import { useCurrentUser } from '../../auth/AuthProvider';
+import { RoleBadge } from '../../components/badges';
+import { notifyError, notifySuccess } from '../../components/notify';
 import { PageHeader } from '../../components/PageHeader';
+import { usePageTitle } from '../../hooks/usePageTitle';
+import { withPasswordConfirm } from '../auth/formValidation';
+
+const validateProfile = schemaResolver(updateProfileSchema, { sync: true });
+const validatePassword = withPasswordConfirm(
+  schemaResolver(changePasswordSchema, { sync: true }),
+  'newPassword',
+  'confirmPassword',
+);
 
 export function AccountPage() {
-  return <PageHeader title="AccountPage" />;
+  usePageTitle('Account settings');
+  const user = useCurrentUser();
+
+  return (
+    <>
+      <PageHeader title="Account settings" subtitle="Your profile and password." />
+      {user.mustChangePassword && (
+        <Alert color="yellow" variant="light" mb="lg" icon={<IconAlertTriangle />} title="You're using a temporary password">
+          <Text size="sm">Choose your own password below so only you can sign in.</Text>
+        </Alert>
+      )}
+      <Grid gap="lg">
+        <Grid.Col span={{ base: 12, md: 6 }}>
+          <ProfileCard user={user} />
+        </Grid.Col>
+        <Grid.Col span={{ base: 12, md: 6 }}>
+          <PasswordCard temporary={user.mustChangePassword} />
+        </Grid.Col>
+      </Grid>
+    </>
+  );
+}
+
+function ProfileCard({ user }: { user: User }) {
+  const updateProfile = useUpdateProfile();
+  const form = useForm({
+    mode: 'uncontrolled',
+    initialValues: { name: user.name, email: user.email ?? '' },
+    validate: validateProfile,
+  });
+
+  const handleSubmit = form.onSubmit((values) => {
+    updateProfile.mutate(values, {
+      onSuccess: ({ user: saved }) => {
+        form.setValues({ name: saved.name, email: saved.email ?? '' });
+        form.resetDirty();
+        notifySuccess('Profile saved');
+      },
+      onError: (err) => {
+        const errors = fieldErrors(err);
+        if (Object.keys(errors).length > 0) form.setErrors(errors);
+        else notifyError(err, "Couldn't save your profile");
+      },
+    });
+  });
+
+  return (
+    <Card h="100%">
+      <Group justify="space-between" mb="sm">
+        <Title order={3} fz="h4">
+          Profile
+        </Title>
+      </Group>
+      <Group gap="md" wrap="nowrap" mb="lg">
+        <Avatar name={user.name} color="initials" radius="xl" size={48} />
+        <Stack gap={2} style={{ minWidth: 0 }}>
+          <Group gap="xs" wrap="nowrap">
+            <Text fw={600} truncate>
+              {user.name}
+            </Text>
+            <RoleBadge role={user.role} />
+          </Group>
+          <Text size="sm" c="dimmed">
+            Member since {dayjs(user.createdAt).format('MMMM YYYY')}
+          </Text>
+        </Stack>
+      </Group>
+      <form noValidate onSubmit={handleSubmit}>
+        <Stack gap="md">
+          <TextInput
+            label="Username"
+            description="Used to sign in. Usernames can't be changed."
+            value={user.username}
+            readOnly
+            leftSection={<IconAt size={16} />}
+          />
+          <TextInput label="Name" placeholder="e.g. Sam Patel" required autoComplete="name" key={form.key('name')} {...form.getInputProps('name')} />
+          <TextInput
+            label="Email"
+            description="Optional. You can sign in with it instead of your username."
+            placeholder="e.g. sam.patel@school.org"
+            type="email"
+            autoComplete="email"
+            key={form.key('email')}
+            {...form.getInputProps('email')}
+          />
+          <Group justify="flex-end">
+            <Button type="submit" leftSection={<IconDeviceFloppy size={18} />} loading={updateProfile.isPending}>
+              Save profile
+            </Button>
+          </Group>
+        </Stack>
+      </form>
+    </Card>
+  );
+}
+
+function PasswordCard({ temporary }: { temporary: boolean }) {
+  const changePassword = useChangePassword();
+  const form = useForm({
+    mode: 'uncontrolled',
+    initialValues: { currentPassword: '', newPassword: '', confirmPassword: '' },
+    validate: validatePassword,
+  });
+
+  const handleSubmit = form.onSubmit(({ confirmPassword: _confirm, ...values }) => {
+    changePassword.mutate(values, {
+      onSuccess: () => {
+        form.reset();
+        notifySuccess('Password changed', "You've been signed out on your other devices.");
+      },
+      onError: (err) => {
+        const errors = fieldErrors(err);
+        if (Object.keys(errors).length > 0) form.setErrors(errors);
+        else notifyError(err, "Couldn't change your password");
+      },
+    });
+  });
+
+  return (
+    <Card h="100%">
+      <Group justify="space-between" mb="sm">
+        <Title order={3} fz="h4">
+          Password
+        </Title>
+      </Group>
+      <Text size="sm" c="dimmed" mb="lg">
+        Changing your password signs you out everywhere else.
+      </Text>
+      <form noValidate onSubmit={handleSubmit}>
+        <Stack gap="md">
+          <PasswordInput
+            label="Current password"
+            description={temporary ? 'The temporary password you were given' : undefined}
+            required
+            autoComplete="current-password"
+            key={form.key('currentPassword')}
+            {...form.getInputProps('currentPassword')}
+          />
+          <PasswordInput
+            label="New password"
+            description="At least 8 characters"
+            required
+            autoComplete="new-password"
+            key={form.key('newPassword')}
+            {...form.getInputProps('newPassword')}
+          />
+          <PasswordInput
+            label="Confirm new password"
+            required
+            autoComplete="new-password"
+            key={form.key('confirmPassword')}
+            {...form.getInputProps('confirmPassword')}
+          />
+          <Group justify="flex-end">
+            <Button type="submit" leftSection={<IconKey size={18} />} loading={changePassword.isPending}>
+              Change password
+            </Button>
+          </Group>
+        </Stack>
+      </form>
+    </Card>
+  );
 }

@@ -1,7 +1,14 @@
 // Public props of the IDE components. Pages import components from './index' only.
 
 import type { CompareMode, Language, PseudocodeConfig, TestCase, TestResult } from '@codeclass/shared';
-import type { ReactNode } from 'react';
+import type { ReactNode, Ref } from 'react';
+
+/** Imperative handle exposed by `CodeEditor` through its `ref` prop. */
+export interface CodeEditorHandle {
+  focus(): void;
+  /** Moves the cursor to a 1-based line (and optional column), scrolls it into view and focuses the editor. */
+  goToLine(line: number, column?: number): void;
+}
 
 export interface CodeEditorProps {
   value: string;
@@ -22,6 +29,9 @@ export interface CodeEditorProps {
   ariaLabel?: string;
   /** Font size in px (default 14). */
   fontSize?: number;
+  /** Rounded input-style border (default true). The IDE turns it off inside its panels. */
+  withBorder?: boolean;
+  ref?: Ref<CodeEditorHandle>;
 }
 
 export interface CodeWorkspaceProps {

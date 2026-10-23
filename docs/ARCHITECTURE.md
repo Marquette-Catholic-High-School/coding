@@ -43,7 +43,8 @@ Imports are extensionless (`moduleResolution: bundler`; tsx and Vite resolve `.t
 - `client/src/runtime/{types,index,useCodeRunner}.ts` — code-runner contract.
 - `client/src/ide/types.ts` — IDE component props (`CodeEditor`, `CodeWorkspace`, `WordBank`, `WebPreview`).
 - `client/src/components/*` — PageHeader, QueryState/PageLoader/ErrorAlert, NotFoundCard, CopyIconButton, StatCard,
-  badges (status/late/draft/language/count/code/role/score), LanguageIcon, Markdown, BrandMark, notify, cards.module.css.
+  badges (status/late/draft/language/count/code/role/score), LanguageIcon, Markdown, BrandMark, notify, cards.module.css,
+  RelativeTime ("in 3 days" + absolute tooltip), TemporaryPasswordModal (one-time credentials with copy buttons).
 
 If a contract is genuinely wrong or missing something, make the smallest additive change and mention it in your
 report. Never rename or remove contract members other code may use.

@@ -114,7 +114,7 @@ export interface PseudocodeConfig {
   outputSeparator: string;
   /** Whether each OUTPUT ends with a newline. AP CSP's DISPLAY uses false (values are followed by a space). */
   outputNewline: boolean;
-  /** First list index: 1 (AP CSP, AQA) or 0. */
+  /** First list index: 1 (AP CSP, Cambridge) or 0 (AQA). Also the first position for SUBSTRING. */
   listIndexBase: 0 | 1;
   /** Operators that join strings: "+" and/or "&". */
   concatOperators: Array<'+' | '&'>;
@@ -234,7 +234,11 @@ export const BUILTIN_INFO: readonly BuiltinInfo[] = [
 export interface PseudoIO {
   /** Called with output text (may be partial lines; includes "\n" when a line ends). */
   write(text: string): void;
-  /** Return the next line of input (without "\n"), or null when no input is available (end of input). */
+  /**
+   * Return the next line of input (without "\n"), or null when no input is available (end of input).
+   * A prompt (`INPUT "Name? ", x` / `INPUT("Name? ")`) has already been written with `write` before this is called;
+   * it is passed for information only (e.g. to label an input box) and must not be printed again.
+   */
   readLine(prompt: string | null): string | null;
 }
 

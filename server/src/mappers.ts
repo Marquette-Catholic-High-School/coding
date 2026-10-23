@@ -177,6 +177,13 @@ export function toSubmission(
   };
 }
 
+/** Students only see results for visible tests (teacher autograde runs also store hidden-test results). */
+export function hideHiddenTestResults(submission: Submission, assignment: Pick<AssignmentRow, 'tests'>): Submission {
+  if (!submission.testResults) return submission;
+  const visible = new Set(parseTests(assignment).filter((t) => !t.hidden).map((t) => t.id));
+  return { ...submission, testResults: submission.testResults.filter((r) => visible.has(r.testId)) };
+}
+
 // --- Projects ---------------------------------------------------------------------------------------
 
 export function toProject(row: ProjectRow): Project {

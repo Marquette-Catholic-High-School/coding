@@ -1,0 +1,141 @@
+/* ---------- CodeEditor ---------- */
+
+.editor {
+  position: relative;
+  min-width: 0;
+  overflow: hidden;
+  background-color: var(--mantine-color-body);
+
+  &[data-with-border] {
+    border: 1px solid var(--mantine-color-default-border);
+    border-radius: var(--mantine-radius-md);
+    transition: border-color 120ms ease;
+  }
+
+  &[data-with-border]:focus-within {
+    border-color: var(--mantine-primary-color-filled);
+  }
+
+  &:not([data-with-border]):has(:focus-visible) {
+    outline: 2px solid var(--mantine-primary-color-filled);
+    outline-offset: -2px;
+  }
+
+  &[data-fill] {
+    height: 100%;
+  }
+}
+
+/* ---------- CodeWorkspace ---------- */
+
+.workspace {
+  display: flex;
+  flex-direction: column;
+  gap: var(--mantine-spacing-sm);
+  min-width: 0;
+}
+
+.body {
+  flex: 1;
+  min-height: 0;
+  border: 1px solid var(--mantine-color-default-border);
+  border-radius: var(--mantine-radius-md);
+  overflow: hidden;
+  background-color: var(--mantine-color-body);
+}
+
+/* Splitter panes and panels are flex columns so a `.fill` child takes the remaining height. */
+.column {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.fill {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--mantine-color-default-border);
+  border-radius: var(--mantine-radius-md);
+  overflow: hidden;
+  background-color: var(--mantine-color-body);
+
+  & > * + * {
+    border-top: 1px solid var(--mantine-color-default-border);
+  }
+}
+
+.paneHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--mantine-spacing-xs);
+  flex-shrink: 0;
+  min-height: 36px;
+  padding: 4px var(--mantine-spacing-sm);
+  border-bottom: 1px solid var(--mantine-color-default-border);
+  background-color: light-dark(var(--mantine-color-gray-0), var(--mantine-color-dark-6));
+}
+
+/* ---------- Console ---------- */
+
+.consoleText {
+  margin: 0;
+  padding: var(--mantine-spacing-xs) var(--mantine-spacing-sm);
+  font-family: var(--mantine-font-family-monospace);
+  font-size: var(--mantine-font-size-sm);
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.stdout {
+  color: var(--mantine-color-text);
+}
+
+.stderr {
+  color: light-dark(var(--mantine-color-red-8), var(--mantine-color-red-4));
+}
+
+.stdin {
+  color: light-dark(var(--mantine-color-brand-8), var(--mantine-color-brand-4));
+  font-weight: 600;
+}
+
+.system {
+  color: var(--mantine-color-dimmed);
+  font-style: italic;
+}
+
+.consoleFooter {
+  padding: var(--mantine-spacing-xs) var(--mantine-spacing-sm) var(--mantine-spacing-sm);
+}
+
+/* ---------- Word bank & tests ---------- */
+
+.lockedEntry {
+  border-style: dashed;
+  background-color: light-dark(var(--mantine-color-gray-0), var(--mantine-color-dark-6));
+}
+
+.codeBlock {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* ---------- Web preview ---------- */
+
+.preview {
+  display: block;
+  width: 100%;
+  border: 0;
+  background-color: var(--mantine-color-white);
+}

@@ -31,7 +31,8 @@ export function parseBody<S extends z.ZodType>(schema: S, body: unknown): z.outp
 }
 
 /** Parses a positive integer route param; 404 when invalid (so bad ids look like missing records). */
-export function parseId(value: string | undefined): number {
+export function parseId(value: string | string[] | undefined): number {
+  if (typeof value !== 'string' || !/^\d+$/.test(value)) throw notFound();
   const n = Number(value);
   if (!Number.isInteger(n) || n <= 0) throw notFound();
   return n;
