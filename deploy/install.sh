@@ -357,7 +357,13 @@ if [[ "$MODE" != none ]]; then
 elif [[ -f "$CADDY_SITE" ]]; then
   # Switching to --no-proxy: stop serving CodeClass through Caddy, which an earlier install set up.
   rm -f "$CADDY_SITE"
-  if [[ -f "$CADDYFILE" ]]; then sed -i "\#^import $CADDY_SITE\$#d" "$CADDYFILE"; fi
+  if [[ -f "$CADDYFILE" ]]; then
+    sed -i "\#^import $CADDY_SITE\$#d" "$CADDYFILE"
+    # If nothing else is left, put back the stock Caddyfile the earlier install replaced.
+    if ! grep -qvE '^[[:space:]]*(#.*)?$' "$CADDYFILE" && [[ -f "$CADDYFILE.codeclass-original" ]]; then
+      mv -f "$CADDYFILE.codeclass-original" "$CADDYFILE"
+    fi
+  fi
   systemctl reload caddy 2>/dev/null || true
 fi
 
