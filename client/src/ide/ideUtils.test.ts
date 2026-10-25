@@ -1,7 +1,19 @@
 import type { TestCase } from '@codeclass/shared';
 import { describe, expect, it } from 'vitest';
 import type { OutputChunk } from '../runtime';
-import { consoleInputKey, formatDuration, loadingMessage, nextFitLevel, summarizeTests, tailSegments, testName, testsBadgeColor } from './ideUtils';
+import {
+  consoleInputKey,
+  formatDuration,
+  loadingMessage,
+  nextFitLevel,
+  parseSideTab,
+  resolveSideTab,
+  solutionContent,
+  summarizeTests,
+  tailSegments,
+  testName,
+  testsBadgeColor,
+} from './ideUtils';
 
 const test = (id: string, name = ''): TestCase => ({ id, name, input: '', expectedOutput: '', hidden: false, points: 1 });
 
@@ -104,6 +116,34 @@ describe('ideUtils', () => {
     // The last level never steps further, however narrow.
     expect(nextFitLevel(2, 2, 100, 400, natural)).toBe(2);
     expect(nextFitLevel(0, 2, 700, 700, natural)).toBe(0);
+  });
+
+  it('reads a remembered side tab and falls back when the panel no longer has it', () => {
+    expect(parseSideTab('solution')).toBe('solution');
+    expect(parseSideTab('words')).toBe('words');
+    expect(parseSideTab('answers')).toBeNull();
+    expect(parseSideTab(3)).toBeNull();
+    expect(parseSideTab(null)).toBeNull();
+
+    expect(resolveSideTab('solution', ['instructions', 'tests', 'solution'])).toBe('solution');
+    // The solution was taken away (or isn't released to this student): show the first tab instead.
+    expect(resolveSideTab('solution', ['instructions', 'tests'])).toBe('instructions');
+    expect(resolveSideTab(null, ['tests', 'solution'])).toBe('tests');
+    expect(resolveSideTab('solution', [])).toBeNull();
+  });
+
+  it('shows the solution code, else the note about when it will be available', () => {
+    expect(solutionContent('print(1)\n', null)).toEqual({ code: 'print(1)\n' });
+    // Code wins over a note.
+    expect(solutionContent('print(1)', 'Later')).toEqual({ code: 'print(1)' });
+    expect(solutionContent('', ' After the due date. ')).toEqual({ note: 'After the due date.' });
+    expect(solutionContent(null, "Your teacher's solution will appear here once your work is graded.")).toEqual({
+      note: "Your teacher's solution will appear here once your work is graded.",
+    });
+    // Blank code and no note: no Solution tab at all.
+    expect(solutionContent('  \n', null)).toBeNull();
+    expect(solutionContent(undefined, '   ')).toBeNull();
+    expect(solutionContent(null, undefined)).toBeNull();
   });
 
   it('sends a line on Enter and ends input on Ctrl+D', () => {

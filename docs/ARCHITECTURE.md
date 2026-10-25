@@ -62,7 +62,7 @@ report. Never rename or remove contract members other code may use.
   middleware, e.g. `router.post('/x', requireStaff, handler)`). Admins can do everything teachers can, on every class.
 - Authorization: `loadClassForStaff/ForMember`, `loadAssignmentForStaff/ForMember`, `loadLanguageRow` (throw 404/403).
 - Mapping: `toUser`, `toLanguage` (+`LANGUAGE_SELECT`), `toClassSummary` (+`CLASS_SELECT`), `toAssignment` (strips hidden
-  tests for students), `toSubmission` (synthesizes `not_started`), `isLate`, `toProject`.
+  tests for students; needs a student's own submission to decide whether to send the solution), `toSubmission` (synthesizes `not_started`), `isLate`, `toProject`.
 - DB is synchronous better-sqlite3. Wrap multi-statement writes in `db.transaction(() => …)()`. Always set
   `updated_at = nowIso()` on updates. Booleans are 0/1; JSON columns via `JSON.stringify` / `parseJson`.
 - 400 errors for a specific field use `badRequest(msg, { field: msg })`; uniqueness clashes use
@@ -275,6 +275,15 @@ CALL, MOD/DIV, LENGTH, `&` concatenation),
 - Assignment language must be one of the class's languages (400 `fieldErrors.languageId`); an existing assignment may
   keep a language that was later disabled. Kinds that don't support tests (`web`) must have no tests. Test ids unique.
   `PATCH` can't lower `points` below an existing grade (400 `fieldErrors.points`); grades are never rescaled.
+- Solutions: `solutionCode` + `solutionVisibility` (`assignments.solution_code`/`solution_visibility`, defaults `''` /
+  `'hidden'`; `migrate()` adds both columns to older databases). `after_due` needs a due date, checked against the saved
+  values merged with the PATCH, so clearing the due date of an `after_due` assignment is rejected too (400
+  `fieldErrors.solutionVisibility`). Staff always get `solutionCode`; students get it only when `solutionReleased`
+  (`shared/src/solutions.ts`, the only place the rules live) allows it for their own submission status, else null —
+  `toAssignment` requires the student's submission and throws without it. `hasSolution` = code isn't blank. Release is
+  decided on each read: work returned for revision hides an `after_graded` / `after_due` solution again until it's
+  graded / handed in. Only `GET/POST/PATCH /assignments…` (`assignmentResponse`) and the teacher's grading detail
+  return an `Assignment`; the student submission endpoints return just the submission.
 - `GET /classes/:id/assignments` order: due date ascending (no due date last), then newest. Staff rows carry class
   counts; student rows carry `myStatus/myLate/myGrade` and only published assignments.
 - Student work: `GET/PUT /assignments/:id/submission` (PUT 409 when submitted — "Unsubmit to keep editing" — or
@@ -291,15 +300,23 @@ CALL, MOD/DIV, LENGTH, `&` concatenation),
   `allowLate` false, and `isLate` is false while `returned_at` is set (also after it is handed in again and graded).
   `db.ts` `migrate()` adds `returned_at` to older databases (marking in-progress rows with feedback as returned).
 - UI: `AssignmentEditorPage` (new + edit: details card with Markdown instructions write/preview, language from class
-  languages, points, due date `DateTimePicker`, allow late, publish/draft; starter code `CodeEditor`; tests editor with
-  compare mode, hidden/points per test, and "Fill expected output from a model solution" which runs a pasted
-  solution against each input via `runTests`/`startRun`; "Preview as student" in a full-screen modal
-  `CodeWorkspace`; sticky save bar; `useBlocker` for unsaved changes), `AssignmentOverviewPage` (teacher view of
-  `/assignments/:id`: header with language/draft/due badges, Edit + Preview + "Autograde all" (runs every test incl.
-  hidden for each submitted/graded submission in the teacher's browser and PATCHes `testResults/autoScore`), stat
-  tiles, instructions accordion, students table filterable All / To grade / Missing), `GradingPage` (read-only
-  `CodeWorkspace` with all tests incl. hidden; side card with status, late, auto score, "Use auto-score", grade
-  `NumberInput` out of points, feedback, Save grade, Return for revision, prev/next student).
+  languages, points, due date `DateTimePicker`, allow late, publish/draft; starter code `CodeEditor`; Solution card
+  (`SolutionEditor`: solution `CodeEditor` with "Copy starter code" while it's empty; "Who can see it" radio cards
+  (`.modeCard`) from `SOLUTION_VISIBILITY_LABELS`, "After the due date" disabled without a due date, and clearing the
+  due date switches it to "Teachers only" with a notice (setting one again switches it back); client validation and
+  the server's `fieldErrors.solutionVisibility` show under the cards; for kinds with tests "Check solution" runs it
+  against every test incl. hidden via `runTests` with the compare mode and lists the failing ones); tests editor with
+  compare mode, hidden/points per test, and "Fill expected output from a model solution" which starts from the
+  solution (else the starter code), runs it against each input via `runTests`/`startRun` and can keep the code it ran
+  as the solution; "Preview as student" in a full-screen modal `CodeWorkspace` showing the solution, or its pending
+  note, as a student who hasn't started would see it now (`solutionView.ts`); sticky save bar; `useBlocker` for
+  unsaved changes; `editorForm.ts` maps form ⇄ API, solution fields included), `AssignmentOverviewPage` (teacher view
+  of `/assignments/:id`: header with language/draft/due badges and `SolutionBadge` (who can see it, description in a
+  tooltip) when there is a solution, Edit + Preview + "Autograde all" (runs every test incl. hidden for each
+  submitted/graded submission in the teacher's browser and PATCHes `testResults/autoScore`), stat tiles, instructions
+  accordion, students table filterable All / To grade / Missing), `GradingPage` (read-only `CodeWorkspace` with all
+  tests incl. hidden and the solution; side card with status, late, auto score, "Use auto-score", grade `NumberInput`
+  out of points, feedback, Save grade, Return for revision, prev/next student).
 
 ### 7.4 Student experience & playground
 - `StudentDashboard` (StatCards, "To do" list, recently graded, join-class modal; first-run empty state asking for a
@@ -309,7 +326,9 @@ CALL, MOD/DIV, LENGTH, `&` concatenation),
   unmount and `beforeunload`; Submit runs the visible tests first and shows a summary in a confirm modal; submitted ⇒
   read-only + Unsubmit; graded ⇒ read-only with grade + feedback banner; returned (in progress with `returnedAt`) ⇒
   editable with a "Returned for revision" banner showing the feedback, never closed or late; closed when past due and
-  late work not allowed).
+  late work not allowed; Solution tab with the server-released `solutionCode`, else `solutionPendingNote` for the
+  current status, and the assignment is refetched whenever `solutionReleased` disagrees with what was loaded, e.g.
+  after a grade or once the due date passes).
 - Playground (`/playground`, any role): `ProjectsPage` (cards, new-project modal with enabled-language select,
   rename, delete) and `ProjectPage` (`CodeWorkspace` + autosave; alert if the language is no longer installed).
   Server `projects.ts`: owner-only (404 otherwise); create requires an enabled language; code starts as the
@@ -339,16 +358,22 @@ CALL, MOD/DIV, LENGTH, `&` concatenation),
   themes from Mantine CSS variables (follow `useComputedColorScheme`), line numbers, bracket matching, history,
   search, `indentWithTab` with Escape-to-leave-editor, Ctrl/Cmd+Enter → `onRun`, `errorLine` highlight.
 - `CodeWorkspace`: toolbar (Run/Stop with `Kbd` hint, Run tests, Clear, language badge, `toolbarRight` slot),
-  resizable panels (Mantine `Splitter`): side panel tabs Instructions | Tests | Words (pseudocode only), editor, and a
-  console (stdout, stderr in red, system lines dimmed, echoed input, inline input field while waiting with an
-  "End input" button / Ctrl+D for programs that read until end of input, runtime-loading notice, "Finished in 0.2 s"
-  footer, clickable error line → editor; renders only the last 2,000 output runs, with an "earlier output hidden"
-  line). Stop (toolbar, and in the Tests tab while tests run) stops a program or a test run; a stopped test run shows
-  what ran but isn't reported through `onTestResults`. The toolbar and the side tabs stay on one line (`useFitLevel`):
-  the toolbar drops the shortcut hint, then shows Run tests as an icon, and only wraps as a last resort; the tabs
-  become icon-only with tooltips. Kind `web`: `WebPreview` + console of `console.log`s instead; pages without
-  scripts update as you type, pages with a `<script>` or `on…=` handler only on Run. Falls back to an "Input for your
-  program" textarea when interactive input is unavailable. Stacks vertically on small screens.
+  resizable panels (Mantine `Splitter`): side panel tabs Instructions | Tests | Words (pseudocode only) | Solution,
+  editor, and a console (stdout, stderr in red, system lines dimmed, echoed input, inline input field while waiting
+  with an "End input" button / Ctrl+D for programs that read until end of input, runtime-loading notice, "Finished in
+  0.2 s" footer, clickable error line → editor; renders only the last 2,000 output runs, with an "earlier output
+  hidden" line). Stop (toolbar, and in the Tests tab while tests run) stops a program or a test run; a stopped test
+  run shows what ran but isn't reported through `onTestResults`. The toolbar and the side tabs stay on one line
+  (`useFitLevel`): the toolbar drops the shortcut hint, then shows Run tests as an icon, and only wraps as a last
+  resort; the tabs become icon-only with tooltips. Kind `web`: `WebPreview` + console of `console.log`s instead; pages
+  without scripts update as you type, pages with a `<script>` or `on…=` handler only on Run. Falls back to an "Input
+  for your program" textarea when interactive input is unavailable. Stacks vertically on small screens. The Solution
+  tab (`SolutionPanel`) appears when `solutionCode` is non-blank: a read-only `CodeEditor` in the workspace's language
+  (grows with the code up to the panel's height), "Run solution" (same runner, Input box and interactive input as Run;
+  disabled while anything runs, Stop while the solution runs; its error line highlights and links to the solution's
+  editor, not the main one) and a copy button. For `web` it shows the solution in the preview, whose header then reads
+  "Solution" with "Back to page". With only `solutionNote` the tab shows that note instead. The remembered side tab
+  falls back to the first tab when the panel no longer has it (`resolveSideTab` in `ideUtils`).
 - `WordBank`: constructs from `buildVocabulary` (learned first; locked greyed with a lock icon and "Not learned
   yet"), keyword chips, rendered examples, built-ins table.
 - `WebPreview`: `iframe sandbox="allow-scripts allow-modals"` with `srcDoc` + injected console capture via

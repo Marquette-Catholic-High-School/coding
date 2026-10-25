@@ -48,7 +48,7 @@ import {
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
 import { useAssignment, useDeleteAssignment, useGradeSubmission, useSubmissionRows } from '../../api/assignments';
-import { DraftBadge, DueBadge, LanguageBadge, LateBadge, ScoreText, SubmissionStatusBadge, TabCountBadge } from '../../components/badges';
+import { DraftBadge, DueBadge, LanguageBadge, LateBadge, ScoreText, SolutionBadge, SubmissionStatusBadge, TabCountBadge } from '../../components/badges';
 import classes from '../../components/cards.module.css';
 import { Markdown } from '../../components/Markdown';
 import { notifyError, notifySuccess } from '../../components/notify';
@@ -177,6 +177,7 @@ function Overview({ data }: { data: AssignmentResponse }) {
             <LanguageBadge kind={language.kind} name={language.name} />
             {!assignment.published && <DraftBadge />}
             <DueBadge dueAt={assignment.dueAt} allowLate={assignment.allowLate} />
+            {assignment.hasSolution && <SolutionBadge visibility={assignment.solutionVisibility} />}
           </>
         }
         actions={
@@ -329,6 +330,10 @@ function Overview({ data }: { data: AssignmentResponse }) {
           starterCode: assignment.starterCode,
           tests: assignment.tests,
           compareMode: assignment.compareMode,
+          dueAt: assignment.dueAt,
+          allowLate: assignment.allowLate,
+          solutionCode: assignment.solutionCode ?? '',
+          solutionVisibility: assignment.solutionVisibility,
         }}
       />
     </>

@@ -17,7 +17,9 @@ import { useMediaQuery, type SplitterPaneSize } from '@mantine/hooks';
 import { inputLines, kindSupportsInput, kindSupportsTests, type TestResult } from '@codeclass/shared';
 import {
   IconAbc,
+  IconArrowBackUp,
   IconBrowser,
+  IconBulb,
   IconChecklist,
   IconClearAll,
   IconFileText,
@@ -35,16 +37,23 @@ import { CodeEditor } from './CodeEditor';
 import { ConsolePanel } from './ConsolePanel';
 import { cssSize } from './editorTheme';
 import classes from './ide.module.css';
-import { loadingMessage, summarizeTests, testsBadgeColor } from './ideUtils';
+import {
+  loadingMessage,
+  parseSideTab,
+  resolveSideTab,
+  SIDE_TABS,
+  solutionContent,
+  summarizeTests,
+  testsBadgeColor,
+  type SideTab,
+} from './ideUtils';
+import { SolutionPanel } from './SolutionPanel';
 import { TestsPanel } from './TestsPanel';
 import type { CodeEditorHandle, CodeWorkspaceProps } from './types';
 import { useFitLevel } from './useFitLevel';
 import { WebPreview } from './WebPreview';
 import { pageHasScripts } from './webPreviewDocument';
 import { WordBank } from './WordBank';
-
-type SideTab = 'instructions' | 'tests' | 'words';
-const SIDE_TABS: readonly SideTab[] = ['instructions', 'tests', 'words'];
 
 const MOBILE_QUERY = '(max-width: 47.99em)';
 const WEB_OUTPUT_LIMIT = 2000;
@@ -150,6 +159,8 @@ export function CodeWorkspace({
   initialTestResults,
   onTestResults,
   toolbarRight,
+  solutionCode,
+  solutionNote,
   banner,
   height = 'calc(100dvh - 210px)',
   storageKey,
@@ -173,16 +184,24 @@ export function CodeWorkspace({
   const hasInstructions = Boolean(instructions?.trim());
   const hasTestsTab = kindSupportsTests(kind) && (tests.length > 0 || hiddenTestCount > 0);
   const hasWords = kind === 'pseudocode' && language.pseudocode != null;
-  const tabs = SIDE_TABS.filter((t) => (t === 'instructions' ? hasInstructions : t === 'tests' ? hasTestsTab : hasWords));
+  const solution = solutionContent(solutionCode, solutionNote);
+  const solutionText = solution && 'code' in solution ? solution.code : null;
+  const available: Record<SideTab, boolean> = {
+    instructions: hasInstructions,
+    tests: hasTestsTab,
+    words: hasWords,
+    solution: solution != null,
+  };
+  const tabs = SIDE_TABS.filter((t) => available[t]);
   const hasSide = tabs.length > 0;
 
   const tabKey = storageKey ? `${storageKey}:tab` : null;
-  const parseTab = (raw: unknown) => (SIDE_TABS.includes(raw as SideTab) ? (raw as SideTab) : null);
-  const [chosenTab, setChosenTab] = useState<SideTab | null>(() => readStored(tabKey, parseTab));
+  const [chosenTab, setChosenTab] = useState<SideTab | null>(() => readStored(tabKey, parseSideTab));
   useEffect(() => {
-    setChosenTab(readStored(tabKey, parseTab));
+    setChosenTab(readStored(tabKey, parseSideTab));
   }, [tabKey]);
-  const sideTab = chosenTab && tabs.includes(chosenTab) ? chosenTab : (tabs[0] ?? null);
+  // A remembered tab the panel no longer has (say, a solution that was hidden again) falls back to the first one.
+  const sideTab = resolveSideTab(chosenTab, tabs);
   const selectTab = (tab: SideTab) => {
     setChosenTab(tab);
     writeStored(tabKey, tab);
@@ -193,6 +212,10 @@ export function CodeWorkspace({
   const showStdinBox = !isWeb && kindSupportsInput(kind) && !canInteract;
   const [stdinText, setStdinText] = useState('');
   const [errorLine, setErrorLine] = useState<number | null>(null);
+  // Whether the last program run was the solution (its error line then belongs to the solution's editor).
+  const [ranSolution, setRanSolution] = useState(false);
+  const solutionEditorRef = useRef<CodeEditorHandle>(null);
+  const [solutionLineRequest, setSolutionLineRequest] = useState<{ line: number; column?: number } | null>(null);
   // The outcome the user cleared from the console (so its footer stays hidden until the next run).
   const [clearedOutcome, setClearedOutcome] = useState<RunOutcome | null>(null);
 
@@ -204,6 +227,12 @@ export function CodeWorkspace({
 
   // ----- Web pages -----
   const [previewHtml, setPreviewHtml] = useState(code);
+  // The preview shows the solution page (from Run solution) until the editor's page is shown again.
+  const [previewingSolution, setPreviewingSolution] = useState(false);
+  const showPreview = (html: string, isSolution = false) => {
+    setPreviewHtml(html);
+    setPreviewingSolution(isSolution);
+  };
   const [reloadKey, setReloadKey] = useState(0);
   const [webOutput, setWebOutput] = useState<OutputChunk[]>([]);
   // Plain HTML/CSS updates as you type. A page with scripts only updates on Run, so half-typed code (say, a `while`
@@ -215,14 +244,14 @@ export function CodeWorkspace({
   useEffect(() => {
     if (!isWeb) return;
     if (code !== typedCode.current) {
-      setPreviewHtml(code);
+      showPreview(code);
       return;
     }
     if (runsScripts) return;
-    const timer = window.setTimeout(() => setPreviewHtml(code), PREVIEW_DEBOUNCE_MS);
+    const timer = window.setTimeout(() => showPreview(code), PREVIEW_DEBOUNCE_MS);
     return () => window.clearTimeout(timer);
   }, [isWeb, code, runsScripts]);
-  const previewStale = runsScripts && previewHtml !== code;
+  const previewStale = runsScripts && !previewingSolution && previewHtml !== code;
 
   // Every reload runs the page again, so earlier console messages no longer apply.
   useEffect(() => {
@@ -238,16 +267,24 @@ export function CodeWorkspace({
   };
 
   // ----- Actions -----
-  const handleRun = () => {
+  /** Runs `program` in the console (web: shows it in the preview), with the Input box's lines when there is one. */
+  const runProgram = (program: string, isSolution: boolean) => {
     if (isWeb) {
-      setPreviewHtml(code);
+      showPreview(program, isSolution);
       setReloadKey((k) => k + 1);
       return;
     }
     if (busy) return;
     setErrorLine(null);
     setClearedOutcome(null);
-    void runner.run(code, showStdinBox ? inputLines(stdinText) : undefined);
+    setRanSolution(isSolution);
+    void runner.run(program, showStdinBox ? inputLines(stdinText) : undefined);
+  };
+
+  const handleRun = () => runProgram(code, false);
+
+  const handleRunSolution = () => {
+    if (solutionText != null) runProgram(solutionText, true);
   };
 
   const handleRunTests = async () => {
@@ -275,12 +312,23 @@ export function CodeWorkspace({
   };
 
   const handleChange = (value: string) => {
-    setErrorLine(null);
+    if (!ranSolution) setErrorLine(null);
     typedCode.current = value;
     onCodeChange?.(value);
   };
 
   const goToLine = (line: number, column?: number) => editorRef.current?.goToLine(line, column);
+
+  // An error in the solution: open the Solution tab, then move its editor to the line once it is mounted.
+  const goToSolutionLine = (line: number, column?: number) => {
+    selectTab('solution');
+    setSolutionLineRequest({ line, column });
+  };
+  useEffect(() => {
+    if (!solutionLineRequest || sideTab !== 'solution') return;
+    solutionEditorRef.current?.goToLine(solutionLineRequest.line, solutionLineRequest.column);
+    setSolutionLineRequest(null);
+  }, [solutionLineRequest, sideTab]);
 
   const outcome = runner.lastOutcome && runner.lastOutcome !== clearedOutcome && !runner.isRunning ? runner.lastOutcome : null;
   const consoleEmpty = isWeb ? webOutput.length === 0 : runner.output.length === 0 && outcome == null;
@@ -381,7 +429,7 @@ export function CodeWorkspace({
         onChange={editable ? handleChange : undefined}
         language={language}
         readOnly={!editable}
-        errorLine={errorLine}
+        errorLine={ranSolution ? null : errorLine}
         onRun={handleRun}
         withBorder={false}
         ariaLabel={`${language.name} code`}
@@ -422,7 +470,7 @@ export function CodeWorkspace({
       onEndInput={() => runner.endInput()}
       outcome={outcome}
       loadingMessage={loadingMessage(kind)}
-      onGoToLine={goToLine}
+      onGoToLine={!ranSolution ? goToLine : solutionText != null ? goToSolutionLine : undefined}
       emptyMessage={`Press Run (or ${MOD_KEY} + Enter) to see what your program prints.`}
       above={stdinBox}
     />
@@ -432,12 +480,16 @@ export function CodeWorkspace({
     <Box className={`${classes.column} ${classes.fill}`}>
       <div className={classes.paneHeader}>
         <Group gap={6} wrap="nowrap">
-          <IconBrowser size={16} aria-hidden />
+          {previewingSolution ? <IconBulb size={16} aria-hidden /> : <IconBrowser size={16} aria-hidden />}
           <Text size="sm" fw={600}>
-            Page
+            {previewingSolution ? 'Solution' : 'Page'}
           </Text>
         </Group>
-        {previewStale ? (
+        {previewingSolution ? (
+          <Button size="compact-xs" variant="light" leftSection={<IconArrowBackUp size={14} />} onClick={handleRun}>
+            Back to page
+          </Button>
+        ) : previewStale ? (
           <Tooltip label={`Pages with scripts update when you press Run (${MOD_KEY} + Enter)`} multiline maw={260}>
             <Button size="compact-xs" variant="light" leftSection={<IconRefresh size={14} />} onClick={handleRun}>
               Show changes
@@ -459,14 +511,15 @@ export function CodeWorkspace({
   // Side tabs fit on one line by showing only their icons when the panel is narrow.
   const tabsFit = useFitLevel<HTMLDivElement>(1);
   const iconTabs = tabsFit.level > 0;
+  // Icon tabs drop the count badge (it moves into the tooltip and label) so up to four fit a narrow panel.
   const sideTabButton = (value: SideTab, label: string, icon: ReactNode, right?: ReactNode, ariaLabel = label) => (
-    <Tooltip key={value} label={label} disabled={!iconTabs}>
+    <Tooltip key={value} label={ariaLabel} disabled={!iconTabs}>
       <Tabs.Tab
         value={value}
         leftSection={icon}
-        rightSection={right}
+        rightSection={iconTabs ? undefined : right}
         aria-label={iconTabs ? ariaLabel : undefined}
-        px={iconTabs ? 'sm' : undefined}
+        px={iconTabs ? 6 : undefined}
       >
         {iconTabs ? null : label}
       </Tabs.Tab>
@@ -485,7 +538,7 @@ export function CodeWorkspace({
         px="xs"
         grow={iconTabs}
         className={iconTabs ? undefined : classes.noShrink}
-        style={{ flexShrink: 0, flexWrap: iconTabs ? undefined : 'nowrap' }}
+        style={{ flexShrink: 0, flexWrap: 'nowrap', overflowX: iconTabs ? 'auto' : undefined }}
       >
         {hasInstructions && sideTabButton('instructions', 'Instructions', <IconFileText size={16} />)}
         {hasTestsTab &&
@@ -501,6 +554,7 @@ export function CodeWorkspace({
             tests.length > 0 ? `Tests (${tests.length})` : 'Tests',
           )}
         {hasWords && sideTabButton('words', 'Words', <IconAbc size={16} />)}
+        {solution && sideTabButton('solution', 'Solution', <IconBulb size={16} />)}
       </Tabs.List>
       {hasInstructions && (
         <Tabs.Panel value="instructions" style={panelStyle}>
@@ -530,6 +584,21 @@ export function CodeWorkspace({
           <ScrollPanel mobile={isMobile}>
             <WordBank config={language.pseudocode} compact />
           </ScrollPanel>
+        </Tabs.Panel>
+      )}
+      {solution && (
+        <Tabs.Panel value="solution" style={panelStyle}>
+          <SolutionPanel
+            content={solution}
+            language={language}
+            mobile={isMobile}
+            running={ranSolution && runner.isRunning}
+            canRun={!busy}
+            onRun={handleRunSolution}
+            onStop={handleStop}
+            errorLine={ranSolution ? errorLine : null}
+            editorRef={solutionEditorRef}
+          />
         </Tabs.Panel>
       )}
     </Tabs>

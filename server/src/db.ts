@@ -63,6 +63,9 @@ export interface AssignmentRow {
   /** JSON TestCase[] */
   tests: string;
   compare_mode: 'exact' | 'trim' | 'ignore-whitespace' | 'ignore-case';
+  /** Reference solution ('' = none). */
+  solution_code: string;
+  solution_visibility: 'hidden' | 'after_due' | 'after_graded' | 'visible';
   created_at: string;
   updated_at: string;
 }
@@ -98,6 +101,9 @@ export interface ProjectRow {
 }
 
 const NOW = "(strftime('%Y-%m-%dT%H:%M:%fZ','now'))";
+/** Column definition shared by SCHEMA and migrate(). */
+const SOLUTION_VISIBILITY_COLUMN =
+  "TEXT NOT NULL DEFAULT 'hidden' CHECK (solution_visibility IN ('hidden','after_due','after_graded','visible'))";
 
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS users (
@@ -172,6 +178,8 @@ CREATE TABLE IF NOT EXISTS assignments (
   allow_late INTEGER NOT NULL DEFAULT 1,
   tests TEXT NOT NULL DEFAULT '[]',
   compare_mode TEXT NOT NULL DEFAULT 'trim',
+  solution_code TEXT NOT NULL DEFAULT '',
+  solution_visibility ${SOLUTION_VISIBILITY_COLUMN},
   created_at TEXT NOT NULL DEFAULT ${NOW},
   updated_at TEXT NOT NULL DEFAULT ${NOW}
 );
@@ -219,6 +227,13 @@ export function migrate(db: Database.Database): void {
       // Before returned_at existed, returning work left it in progress with the teacher's feedback (students can't
       // write feedback), so mark those rows as returned.
       db.exec("UPDATE submissions SET returned_at = updated_at WHERE status = 'in_progress' AND feedback IS NOT NULL");
+    })();
+  }
+  const assignmentColumns = db.prepare('PRAGMA table_info(assignments)').all() as { name: string }[];
+  if (!assignmentColumns.some((c) => c.name === 'solution_code')) {
+    db.transaction(() => {
+      db.exec("ALTER TABLE assignments ADD COLUMN solution_code TEXT NOT NULL DEFAULT ''");
+      db.exec(`ALTER TABLE assignments ADD COLUMN solution_visibility ${SOLUTION_VISIBILITY_COLUMN}`);
     })();
   }
 }

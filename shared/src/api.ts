@@ -253,6 +253,9 @@ export const assignmentInputSchema = z.object({
   allowLate: z.boolean().default(true),
   tests: z.array(testCaseSchema).max(50).default([]),
   compareMode: z.enum(['exact', 'trim', 'ignore-whitespace', 'ignore-case']).default('trim'),
+  /** Reference solution (''= none). `after_due` needs a due date (400 fieldErrors.solutionVisibility). */
+  solutionCode: z.string().max(50000).default(''),
+  solutionVisibility: z.enum(['hidden', 'after_due', 'after_graded', 'visible']).default('hidden'),
 });
 export type AssignmentInput = z.input<typeof assignmentInputSchema>;
 export const updateAssignmentSchema = assignmentInputSchema.partial();

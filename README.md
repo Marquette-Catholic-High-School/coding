@@ -25,6 +25,9 @@ JavaScript, Python and a *Classroom Pseudocode* language.
    add students yourself from the class's **Students** tab, which hands out temporary passwords.
 4. **New assignment**: write instructions (Markdown), choose the language, add starter code and input/output tests.
    You can mark tests as hidden, and **Fill expected outputs from a model solution** fills them in for you.
+   Add your own **solution** too: **Check solution** runs it against every test. You see it beside each student's
+   work while grading, and you choose when students see it: never, after the due date, once their work is graded, or
+   straight away.
 5. Students code, run tests and submit. You grade from the assignment page. **Autograde all** runs every test,
    hidden ones included, against every submission.
 

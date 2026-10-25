@@ -9,6 +9,7 @@ import {
   type AssignmentsResponse,
   type LanguageKind,
   type OkResponse,
+  type SolutionVisibility,
   type SubmissionStatus,
   type TestCase,
   type User,
@@ -33,7 +34,8 @@ export function assignmentResponse(row: AssignmentRow, cls: Pick<ClassRow, 'id' 
     submission = hideHiddenTestResults(toSubmission(sub, row, viewer.id), row);
   }
   return {
-    assignment: toAssignment(row, viewer),
+    // The student's own submission decides whether the solution is released to them.
+    assignment: toAssignment(row, viewer, submission),
     class: { id: cls.id, name: cls.name },
     language: toLanguage(language, viewer),
     submission,
@@ -58,6 +60,14 @@ function requireClassLanguage(classId: number, languageId: string): LanguageRow 
     throw badRequest(msg, { languageId: msg });
   }
   return language;
+}
+
+/** Releasing the solution after the due date needs a due date (checked against the saved values merged with a PATCH). */
+function validateSolution(visibility: SolutionVisibility, dueAt: string | null): void {
+  if (visibility === 'after_due' && dueAt == null) {
+    const msg = 'Set a due date, or choose another time to show the solution';
+    throw badRequest(msg, { solutionVisibility: msg });
+  }
 }
 
 function validateTests(kind: LanguageKind, tests: TestCase[]): void {
@@ -180,12 +190,14 @@ router.post('/classes/:id/assignments', requireStaff, (req, res) => {
   const input = parseBody(assignmentInputSchema, req.body);
   const language = requireClassLanguage(cls.id, input.languageId);
   validateTests(language.kind as LanguageKind, input.tests);
+  validateSolution(input.solutionVisibility, input.dueAt);
 
   const info = db
     .prepare(
       `INSERT INTO assignments
-        (class_id, title, instructions, language_id, starter_code, due_at, points, published, allow_late, tests, compare_mode)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        (class_id, title, instructions, language_id, starter_code, due_at, points, published, allow_late, tests, compare_mode,
+         solution_code, solution_visibility)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       cls.id,
@@ -199,6 +211,8 @@ router.post('/classes/:id/assignments', requireStaff, (req, res) => {
       input.allowLate ? 1 : 0,
       JSON.stringify(input.tests),
       input.compareMode,
+      input.solutionCode,
+      input.solutionVisibility,
     );
   const row = db.prepare('SELECT * FROM assignments WHERE id = ?').get(info.lastInsertRowid) as AssignmentRow;
   res.status(201).json(assignmentResponse(row, cls, user));
@@ -227,6 +241,10 @@ router.patch('/assignments/:id', requireStaff, (req, res) => {
   }
   const tests = sent('tests') ? parsed.tests! : parseTests(assignment);
   validateTests(kind, tests);
+  validateSolution(
+    sent('solutionVisibility') ? parsed.solutionVisibility! : assignment.solution_visibility,
+    sent('dueAt') ? (parsed.dueAt ?? null) : assignment.due_at,
+  );
   if (sent('points')) {
     // Grades must stay within 0..points; existing grades are never rescaled.
     // Only students still in the class count: grades of students who left can't be edited any more.
@@ -260,6 +278,8 @@ router.patch('/assignments/:id', requireStaff, (req, res) => {
   if (sent('allowLate')) set('allow_late', parsed.allowLate ? 1 : 0);
   if (sent('tests')) set('tests', JSON.stringify(parsed.tests));
   if (sent('compareMode')) set('compare_mode', parsed.compareMode);
+  if (sent('solutionCode')) set('solution_code', parsed.solutionCode);
+  if (sent('solutionVisibility')) set('solution_visibility', parsed.solutionVisibility);
   set('updated_at', nowIso());
   db.prepare(`UPDATE assignments SET ${sets.join(', ')} WHERE id = ?`).run(...values, assignment.id);
 

@@ -77,6 +77,30 @@ export function nextFitLevel(
   return level;
 }
 
+/** Tabs of the workspace's side panel, in display order. */
+export type SideTab = 'instructions' | 'tests' | 'words' | 'solution';
+export const SIDE_TABS: readonly SideTab[] = ['instructions', 'tests', 'words', 'solution'];
+
+/** A side tab read back from storage, or null when the value isn't one. */
+export function parseSideTab(raw: unknown): SideTab | null {
+  return SIDE_TABS.includes(raw as SideTab) ? (raw as SideTab) : null;
+}
+
+/** The tab to show: the chosen one while the panel has it (a remembered tab may be gone), else the first. */
+export function resolveSideTab(chosen: SideTab | null, available: readonly SideTab[]): SideTab | null {
+  return chosen && available.includes(chosen) ? chosen : (available[0] ?? null);
+}
+
+/** What the Solution tab shows: the code, else a note about when it will be available; null means no tab. */
+export function solutionContent(
+  code: string | null | undefined,
+  note: string | null | undefined,
+): { code: string } | { note: string } | null {
+  if (code?.trim()) return { code };
+  if (note?.trim()) return { note: note.trim() };
+  return null;
+}
+
 /** "Starting Python… the first run downloads about 10 MB" (size taken from the language catalog). */
 export function loadingMessage(kind: LanguageKind): string {
   const label = LANGUAGE_KIND_LABELS[kind];

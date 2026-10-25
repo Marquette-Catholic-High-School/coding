@@ -53,6 +53,13 @@ export interface CodeWorkspaceProps {
   onTestResults?: (results: TestResult[]) => void;
   /** Controls at the right end of the toolbar (save status, Submit…). */
   toolbarRight?: ReactNode;
+  /**
+   * Reference solution, shown read-only in a "Solution" side tab with a way to run it in the console. Pass it for
+   * teachers, and for students only once it is released to them. Empty/null = no Solution tab (unless solutionNote).
+   */
+  solutionCode?: string | null;
+  /** Shown in the Solution tab instead when the viewer can't see the solution yet (e.g. "after the due date"). */
+  solutionNote?: string | null;
   /** Optional node rendered above the editor area (e.g. teacher feedback alert). */
   banner?: ReactNode;
   /** CSS height of the whole workspace. Default 'calc(100dvh - 210px)' with a 520px minimum. */

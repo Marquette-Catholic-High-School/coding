@@ -145,11 +145,14 @@ describe('student work', () => {
   });
 
   it('enforces the due date when late work is not allowed', async () => {
-    const closed = await createAssignment({ dueAt: '2020-01-01T00:00:00Z', allowLate: false });
-    await amy.client.put(`/assignments/${closed}/submission`, { code: 'late work' });
+    const closed = await createAssignment({ dueAt: '2099-01-01T00:00:00Z', allowLate: false });
+    expect((await amy.client.put(`/assignments/${closed}/submission`, { code: 'draft' })).status).toBe(200);
+    expect((await teacher.patch(`/assignments/${closed}`, { dueAt: '2020-01-01T00:00:00Z' })).status).toBe(200);
+    // Once closed, the work can neither be handed in nor changed.
+    expect((await amy.client.put(`/assignments/${closed}/submission`, { code: 'late work' })).status).toBe(409);
     const res = await amy.client.post(`/assignments/${closed}/submit`, { code: 'late work' });
     expect(res.status).toBe(409);
-    expect(dbRow(closed, amy.id)!.status).toBe('in_progress');
+    expect(dbRow(closed, amy.id)).toMatchObject({ status: 'in_progress', code: 'draft' });
 
     const open = await createAssignment({ dueAt: '2020-01-01T00:00:00Z', allowLate: true });
     const late = await amy.client.post<SubmissionResponse>(`/assignments/${open}/submit`, { code: 'late work' });
@@ -414,6 +417,7 @@ describe('return for revision after the due date', () => {
   it('adds returned_at to databases created before it existed, marking work that was returned', () => {
     const old = new Database(':memory:');
     try {
+      old.exec('CREATE TABLE assignments (id INTEGER PRIMARY KEY, title TEXT NOT NULL)');
       old.exec(`CREATE TABLE submissions (
         id INTEGER PRIMARY KEY, status TEXT NOT NULL, feedback TEXT, submitted_at TEXT, updated_at TEXT NOT NULL)`);
       const insert = old.prepare('INSERT INTO submissions (id, status, feedback, submitted_at, updated_at) VALUES (?, ?, ?, ?, ?)');

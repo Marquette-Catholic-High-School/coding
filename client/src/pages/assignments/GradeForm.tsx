@@ -1,5 +1,6 @@
-import { computeAutoScore, type Assignment, type Submission, type TestResult } from '@codeclass/shared';
+import { computeAutoScore, solutionReleased, type Assignment, type Submission, type TestResult } from '@codeclass/shared';
 import {
+  Alert,
   Avatar,
   Button,
   Card,
@@ -15,7 +16,7 @@ import {
 } from '@mantine/core';
 import { useForm } from '@mantine/form';
 import { modals } from '@mantine/modals';
-import { IconArrowBackUp, IconCheck, IconDeviceFloppy, IconMathFunction } from '@tabler/icons-react';
+import { IconAlertTriangle, IconArrowBackUp, IconCheck, IconDeviceFloppy, IconMathFunction } from '@tabler/icons-react';
 import { useCallback, useRef, useState, type ReactNode } from 'react';
 import { useBlocker } from 'react-router';
 import { useGradeSubmission } from '../../api/assignments';
@@ -123,14 +124,24 @@ export function GradeForm({
     }
   };
 
+  // The student may already have seen the solution (it was released to their handed-in or graded work).
+  const sawSolution = solutionReleased(assignment, assignment.hasSolution, submission.status, Date.now(), submission.returnedAt != null);
   const confirmReturn = () =>
     modals.openConfirmModal({
       title: 'Return for revision?',
       children: (
-        <Text size="sm">
-          {student.name} will be able to edit their code and hand it in again, even after the due date, and it won't be marked late.
-          Your feedback stays with the work{submission.grade != null ? ', and the current grade is removed until you grade it again' : ''}.
-        </Text>
+        <Stack gap="sm">
+          <Text size="sm">
+            {student.name} will be able to edit their code and hand it in again, even after the due date, and it won't be marked
+            late. Your feedback stays with the work
+            {submission.grade != null ? ', and the current grade is removed until you grade it again' : ''}.
+          </Text>
+          {sawSolution && (
+            <Alert variant="light" color="yellow" icon={<IconAlertTriangle size={18} />}>
+              <Text size="sm">{student.name} has already been able to see the solution to this assignment.</Text>
+            </Alert>
+          )}
+        </Stack>
       ),
       labels: { confirm: 'Return for revision', cancel: 'Cancel' },
       onConfirm: () => void returnForRevision(),

@@ -14,6 +14,8 @@ export interface SubmitRequest {
   dueAt: string | null;
   /** Submitting now is after the due date. */
   late: boolean;
+  /** Handing in shows this student the teacher's solution, after which the work can't be unsubmitted. */
+  revealsSolution: boolean;
 }
 
 function plural(n: number, word: string) {
@@ -149,7 +151,15 @@ function SubmitFlow({
         </Alert>
       )}
 
-      {!testing && (
+      {snapshot.revealsSolution && (
+        <Alert variant="light" color="yellow" icon={<IconAlertTriangle />} title="This shows you the solution">
+          <Text size="sm">
+            Once you hand in, you'll see your teacher's solution, so you won't be able to unsubmit and change your work.
+          </Text>
+        </Alert>
+      )}
+
+      {!testing && !snapshot.revealsSolution && (
         <Text size="sm" c="dimmed">
           After you submit, your code is locked. You can unsubmit to change it until your teacher grades it.
         </Text>

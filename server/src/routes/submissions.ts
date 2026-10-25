@@ -3,6 +3,7 @@
 import {
   computeAutoScore,
   gradeSubmissionSchema,
+  handingInRevealsSolution,
   saveSubmissionSchema,
   submitSchema,
   type SubmissionDetailResponse,
@@ -22,6 +23,11 @@ import { hideHiddenTestResults, LANGUAGE_SELECT, parseTests, toAssignment, toLan
 export const router = Router();
 
 type StudentRef = Pick<UserRow, 'id' | 'name' | 'username'>;
+
+/** Past the due date and not accepting late work. */
+function assignmentClosed(assignment: AssignmentRow): boolean {
+  return assignment.allow_late !== 1 && assignment.due_at != null && Date.now() > Date.parse(assignment.due_at);
+}
 
 function findSubmission(assignmentId: number, studentId: number): SubmissionDbRow | undefined {
   return db.prepare('SELECT * FROM submissions WHERE assignment_id = ? AND student_id = ?').get(assignmentId, studentId) as
@@ -69,6 +75,10 @@ router.put('/assignments/:id/submission', requireAuth, (req, res) => {
   const existing = findSubmission(assignment.id, user.id);
   if (existing?.status === 'submitted') throw conflict('This work has been handed in. Unsubmit to keep editing.');
   if (existing?.status === 'graded') throw conflict('This work has already been graded.');
+  // Closed (past due, no late work, not returned for revision): it can't be handed in, so it can't be changed either.
+  if (existing?.returned_at == null && assignmentClosed(assignment)) {
+    throw conflict("The due date has passed and this assignment doesn't accept late work.");
+  }
   if (existing) {
     db.prepare('UPDATE submissions SET code = ?, updated_at = ? WHERE id = ?').run(code, nowIso(), existing.id);
   } else {
@@ -88,7 +98,7 @@ router.post('/assignments/:id/submit', requireAuth, (req, res) => {
   if (existing?.status === 'graded') throw conflict('This work has already been graded.');
   // Work the teacher returned for revision can always be handed in again (and isn't late; see isLate).
   const returned = existing?.returned_at != null;
-  if (!returned && assignment.allow_late !== 1 && assignment.due_at && Date.now() > Date.parse(assignment.due_at)) {
+  if (!returned && assignmentClosed(assignment)) {
     throw conflict("The due date has passed and this assignment doesn't accept late work.");
   }
 
@@ -118,6 +128,11 @@ router.post('/assignments/:id/unsubmit', requireAuth, (req, res) => {
   const existing = findSubmission(assignment.id, user.id);
   if (existing?.status === 'graded') throw conflict('This work has already been graded.');
   if (existing?.status !== 'submitted') throw conflict("This work hasn't been handed in.");
+  // Handing in is what showed this student the solution: unsubmitting would let them hand the solution in.
+  const rules = { dueAt: assignment.due_at, allowLate: assignment.allow_late === 1, solutionVisibility: assignment.solution_visibility };
+  if (handingInRevealsSolution(rules, assignment.solution_code.trim() !== '', Date.now(), existing.returned_at != null)) {
+    throw conflict("You've seen your teacher's solution, so this work can't be unsubmitted. Ask your teacher if you need to change it.");
+  }
   db.prepare("UPDATE submissions SET status = 'in_progress', submitted_at = NULL, updated_at = ? WHERE id = ?").run(
     nowIso(),
     existing.id,
@@ -163,7 +178,7 @@ router.get('/assignments/:id/submissions/:studentId', requireStaff, (req, res) =
   const index = roster.findIndex((s) => s.id === student.id);
   const language = db.prepare(`${LANGUAGE_SELECT} WHERE l.id = ?`).get(assignment.language_id) as LanguageQueryRow;
   res.json({
-    assignment: toAssignment(assignment, user),
+    assignment: toAssignment(assignment, user, null),
     class: { id: cls.id, name: cls.name },
     language: toLanguage(language, user),
     student: { id: student.id, name: student.name, username: student.username },

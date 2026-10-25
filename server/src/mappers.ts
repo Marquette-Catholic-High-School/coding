@@ -3,6 +3,7 @@
 import {
   normalizePseudocodeConfig,
 } from '@codeclass/shared/pseudocode';
+import { solutionReleased } from '@codeclass/shared';
 import type {
   Assignment,
   ClassSummary,
@@ -106,10 +107,23 @@ export function parseTests(row: Pick<AssignmentRow, 'tests'>): TestCase[] {
   return parseJson<TestCase[]>(row.tests, []);
 }
 
-/** Students never receive hidden tests. */
-export function toAssignment(row: AssignmentRow, viewer: User): Assignment {
+/**
+ * Students never receive hidden tests, and get the solution only once `solutionReleased` allows it for their own
+ * submission, so `ownSubmission` is required for students (staff pass null and always get the solution).
+ */
+export function toAssignment(
+  row: AssignmentRow,
+  viewer: User,
+  ownSubmission: Pick<Submission, 'status' | 'returnedAt'> | null,
+): Assignment {
+  const student = viewer.role === 'student';
+  if (student && !ownSubmission) throw new Error("A student's assignment needs their submission status");
   const tests = parseTests(row);
-  const visible = viewer.role === 'student' ? tests.filter((t) => !t.hidden) : tests;
+  const visible = student ? tests.filter((t) => !t.hidden) : tests;
+  const rules = { dueAt: row.due_at, allowLate: row.allow_late === 1, solutionVisibility: row.solution_visibility };
+  const hasSolution = row.solution_code.trim() !== '';
+  const showSolution =
+    !student || solutionReleased(rules, hasSolution, ownSubmission!.status, Date.now(), ownSubmission!.returnedAt != null);
   return {
     id: row.id,
     classId: row.class_id,
@@ -124,6 +138,9 @@ export function toAssignment(row: AssignmentRow, viewer: User): Assignment {
     tests: visible,
     hiddenTestCount: tests.filter((t) => t.hidden).length,
     compareMode: row.compare_mode,
+    solutionCode: showSolution ? row.solution_code : null,
+    solutionVisibility: row.solution_visibility,
+    hasSolution,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

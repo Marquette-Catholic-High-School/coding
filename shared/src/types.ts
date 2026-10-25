@@ -104,6 +104,15 @@ export interface TestCase {
   points: number;
 }
 
+/**
+ * When students may see an assignment's solution:
+ * - `hidden`: never (teachers only);
+ * - `after_due`: once the due date has passed; while late work is still accepted, only to students who have handed in;
+ * - `after_graded`: once the student's own work is graded;
+ * - `visible`: always.
+ */
+export type SolutionVisibility = 'hidden' | 'after_due' | 'after_graded' | 'visible';
+
 export interface Assignment {
   id: number;
   classId: number;
@@ -121,6 +130,14 @@ export interface Assignment {
   /** Number of hidden tests (lets students know more tests exist). */
   hiddenTestCount: number;
   compareMode: CompareMode;
+  /**
+   * The teacher's reference solution ('' when there is none). Students get it only once it is released to them
+   * (see `solutionReleased` in shared/src/solutions.ts); until then it is null.
+   */
+  solutionCode: string | null;
+  solutionVisibility: SolutionVisibility;
+  /** Whether the assignment has a solution at all, so students can be told when they'll see it. */
+  hasSolution: boolean;
   createdAt: string;
   updatedAt: string;
 }

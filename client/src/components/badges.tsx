@@ -1,9 +1,10 @@
 // Every status indicator in the app is a Badge from this file (style guide §4 "Status badges").
 
 import { Badge, Text, Tooltip, type BadgeProps, type MantineColor } from '@mantine/core';
-import type { LanguageKind, Role, SubmissionStatus } from '@codeclass/shared';
+import { SOLUTION_VISIBILITY_LABELS, type LanguageKind, type Role, type SolutionVisibility, type SubmissionStatus } from '@codeclass/shared';
 import {
   IconArchive,
+  IconBulb,
   IconCalendarDue,
   IconCalendarOff,
   IconCheck,
@@ -77,6 +78,24 @@ export function DueBadge({ dueAt, allowLate, done = false }: { dueAt: string | n
     <Tooltip label={`${due.format('ddd D MMM YYYY, h:mm A')}${lateRule}`}>
       <Badge variant="light" color={soon ? 'orange' : 'gray'} tt="none" leftSection={<IconCalendarDue size={12} />} {...BADGE_NO_SHRINK}>
         Due {due.fromNow()}
+      </Badge>
+    </Tooltip>
+  );
+}
+
+/** Teacher views: the assignment has a solution, and when students may see it. */
+export function SolutionBadge({ visibility }: { visibility: SolutionVisibility }) {
+  const { label, description } = SOLUTION_VISIBILITY_LABELS[visibility];
+  return (
+    <Tooltip label={description} multiline maw={300}>
+      <Badge
+        variant="light"
+        color={visibility === 'hidden' ? 'gray' : 'blue'}
+        tt="none"
+        leftSection={<IconBulb size={12} />}
+        {...BADGE_NO_SHRINK}
+      >
+        Solution: {label}
       </Badge>
     </Tooltip>
   );

@@ -1,6 +1,14 @@
 import { Alert, Button, Group, Spoiler, Stack, Text } from '@mantine/core';
 import { modals } from '@mantine/modals';
-import { kindSupportsTests, type AssignmentResponse, type Submission, type TestResult } from '@codeclass/shared';
+import {
+  kindSupportsTests,
+  handingInRevealsSolution,
+  solutionPendingNote,
+  solutionReleased,
+  type AssignmentResponse,
+  type Submission,
+  type TestResult,
+} from '@codeclass/shared';
 import { IconArrowBackUp, IconLock, IconMessageCircle, IconRosetteDiscountCheck, IconSend } from '@tabler/icons-react';
 import { useQueryClient } from '@tanstack/react-query';
 import dayjs from 'dayjs';
@@ -140,6 +148,7 @@ function AssignmentWorkspace({ data, submission }: { data: AssignmentResponse; s
       hiddenTestCount: assignment.hiddenTestCount,
       dueAt: assignment.dueAt,
       late: !wasReturned && assignment.dueAt != null && Date.now() > Date.parse(assignment.dueAt),
+      revealsSolution: handingInRevealsSolution(assignment, assignment.hasSolution, Date.now(), wasReturned),
     });
   };
 
@@ -194,6 +203,28 @@ function AssignmentWorkspace({ data, submission }: { data: AssignmentResponse; s
     });
   };
 
+  // The server only sends the solution once it is released to this student; the note says when that will be.
+  const expectSolution = solutionReleased(assignment, assignment.hasSolution, submission.status, now, wasReturned);
+  const solutionNote =
+    assignment.solutionCode == null
+      ? (solutionPendingNote(assignment, assignment.hasSolution, submission.status, now, wasReturned) ??
+        (expectSolution ? "Loading your teacher's solution…" : null))
+      : null;
+  // Handing in, a grade, a return for revision or the due date passing can release or withdraw the solution: while the
+  // rules disagree with what was loaded, fetch the assignment again now and every 15 s (this computer's clock may be
+  // ahead of the server's).
+  const solutionStale = assignment.hasSolution && expectSolution !== (assignment.solutionCode != null);
+  useEffect(() => {
+    if (!solutionStale) return;
+    const refetch = () => void qc.invalidateQueries({ queryKey: queryKeys.assignments.detail(assignment.id) });
+    refetch();
+    const id = setInterval(refetch, 15_000);
+    return () => clearInterval(id);
+  }, [solutionStale, qc, assignment.id]);
+  // Handing in released the solution, so the server won't let this work be unsubmitted.
+  const unsubmitLocked =
+    submission.status === 'submitted' && handingInRevealsSolution(assignment, assignment.hasSolution, now, wasReturned);
+
   const visibleIds = useMemo(() => new Set(assignment.tests.map((t) => t.id)), [assignment.tests]);
   const storedResults = useMemo(
     () => submission.testResults?.filter((r) => visibleIds.has(r.testId)) ?? null,
@@ -231,10 +262,19 @@ function AssignmentWorkspace({ data, submission }: { data: AssignmentResponse; s
         }
       >
         <Stack gap="sm" align="flex-start">
-          <Text size="sm">Your teacher will grade it soon. Need to change something? Unsubmit, make your changes, then submit again.</Text>
-          <Button size="sm" variant="default" leftSection={<IconArrowBackUp size={18} />} loading={unsubmit.isPending} onClick={handleUnsubmit}>
-            Unsubmit
-          </Button>
+          {unsubmitLocked ? (
+            <Text size="sm">
+              Your teacher will grade it soon. You've seen the solution, so this work can't be unsubmitted; ask your teacher if
+              you need to change it.
+            </Text>
+          ) : (
+            <>
+              <Text size="sm">Your teacher will grade it soon. Need to change something? Unsubmit, make your changes, then submit again.</Text>
+              <Button size="sm" variant="default" leftSection={<IconArrowBackUp size={18} />} loading={unsubmit.isPending} onClick={handleUnsubmit}>
+                Unsubmit
+              </Button>
+            </>
+          )}
         </Stack>
       </Alert>
     );
@@ -289,6 +329,8 @@ function AssignmentWorkspace({ data, submission }: { data: AssignmentResponse; s
         tests={assignment.tests}
         compareMode={assignment.compareMode}
         hiddenTestCount={assignment.hiddenTestCount}
+        solutionCode={assignment.solutionCode}
+        solutionNote={solutionNote}
         initialTestResults={storedResults}
         storageKey={`assignment-${assignment.id}`}
         banner={banner}

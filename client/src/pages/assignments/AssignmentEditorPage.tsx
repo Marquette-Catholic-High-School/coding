@@ -33,9 +33,10 @@ import { PageHeader } from '../../components/PageHeader';
 import { QueryState } from '../../components/QueryState';
 import { usePageTitle } from '../../hooks/usePageTitle';
 import { CodeEditor } from '../../ide';
-import { fingerprint, initialValues, toInput, type EditorForm, type EditorValues } from './editorForm';
+import { dueAtToApi, fingerprint, initialValues, toInput, validateSolutionVisibility, type EditorForm, type EditorValues } from './editorForm';
 import { MarkdownField } from './MarkdownField';
 import { PreviewModal, type PreviewContent } from './PreviewModal';
+import { SolutionEditor } from './SolutionEditor';
 import { TestsEditor } from './TestsEditor';
 
 function validId(n: number): boolean {
@@ -125,6 +126,7 @@ function AssignmentEditor({ cls, languages, existing }: { cls: ClassSummary; lan
       title: (v) => (v.trim() ? null : 'Required'),
       languageId: (v) => (v ? null : 'Choose a language'),
       points: (v) => (v === '' ? 'Required' : null),
+      solutionVisibility: (v, values) => validateSolutionVisibility(v, values.dueAt),
     },
   });
 
@@ -196,6 +198,10 @@ function AssignmentEditor({ cls, languages, existing }: { cls: ClassSummary; lan
       starterCode: v.starterCode,
       tests: supportsTests ? v.tests : [],
       compareMode: v.compareMode,
+      dueAt: dueAtToApi(v.dueAt),
+      allowLate: v.allowLate,
+      solutionCode: v.solutionCode,
+      solutionVisibility: v.solutionVisibility,
     });
     setPreviewOpen(true);
   };
@@ -305,6 +311,8 @@ function AssignmentEditor({ cls, languages, existing }: { cls: ClassSummary; lan
           </Card>
 
           <StarterCodeCard form={form} language={language} />
+
+          <SolutionEditor form={form} language={language} supportsTests={supportsTests} />
 
           {language && supportsTests && <TestsEditor form={form} language={language} />}
           {droppedTests > 0 && (

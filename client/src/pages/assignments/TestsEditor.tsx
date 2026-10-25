@@ -32,7 +32,7 @@ const MONO = { input: { fontFamily: 'var(--mantine-font-family-monospace)' } };
 export function TestsEditor({ form, language }: { form: EditorForm; language: Language }) {
   const [solutionOpen, setSolutionOpen] = useState(false);
   // Re-renders come from the editor page: list edits and setValues update the form's state.
-  const { tests, compareMode, starterCode } = form.getValues();
+  const { tests, compareMode, starterCode, solutionCode } = form.getValues();
   const error = form.errors.tests;
 
   return (
@@ -165,11 +165,13 @@ export function TestsEditor({ form, language }: { form: EditorForm; language: La
         language={language}
         tests={tests}
         compareMode={compareMode}
-        initialCode={starterCode}
-        onApply={(outputs) => {
+        solutionCode={solutionCode}
+        starterCode={starterCode}
+        onApply={(outputs, solution) => {
           const current = form.getValues().tests;
           form.setValues({
             tests: current.map((t) => (outputs.has(t.id) ? { ...t, expectedOutput: outputs.get(t.id)! } : t)),
+            ...(solution != null && { solutionCode: solution }),
           });
         }}
       />

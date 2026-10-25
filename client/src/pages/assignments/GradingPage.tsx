@@ -133,6 +133,7 @@ function GradingView({ data }: { data: SubmissionDetailResponse }) {
             tests={assignment.tests}
             compareMode={assignment.compareMode}
             hiddenTestCount={0}
+            solutionCode={assignment.solutionCode}
             initialTestResults={submission.testResults}
             onTestResults={setRerunResults}
             banner={banner}
