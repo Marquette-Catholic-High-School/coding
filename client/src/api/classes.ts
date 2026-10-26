@@ -4,6 +4,9 @@ import type {
   ClassResponse,
   ClassesResponse,
   CreateClassInput,
+  ImportInvitesInput,
+  InviteImportResponse,
+  InvitesResponse,
   OkResponse,
   RosterResponse,
   TemporaryPasswordResponse,
@@ -112,6 +115,32 @@ export function useResetStudentPassword(classId: number) {
   const invalidate = useInvalidateClasses();
   return useMutation({
     mutationFn: (userId: number) => api.post<TemporaryPasswordResponse>(`/classes/${classId}/students/${userId}/reset-password`),
+    onSuccess: invalidate,
+  });
+}
+
+// --- Invitations by email (spreadsheet import) --------------------------------------------------------
+
+export function useInvites(classId: number) {
+  return useQuery({ queryKey: queryKeys.classes.invites(classId), queryFn: () => api.get<InvitesResponse>(`/classes/${classId}/invites`) });
+}
+
+/** Import (or, with dryRun, preview) students by email. A real import refreshes the roster, invites and counts. */
+export function useImportInvites(classId: number) {
+  // Enrolling students changes the roster and every assignment's submission rows.
+  const invalidate = useInvalidateRoster();
+  return useMutation({
+    mutationFn: (input: ImportInvitesInput) => api.post<InviteImportResponse>(`/classes/${classId}/invites`, input),
+    onSuccess: (_data, input) => {
+      if (!input.dryRun) void invalidate();
+    },
+  });
+}
+
+export function useDeleteInvite(classId: number) {
+  const invalidate = useInvalidateClasses();
+  return useMutation({
+    mutationFn: (inviteId: number) => api.delete<OkResponse>(`/classes/${classId}/invites/${inviteId}`),
     onSuccess: invalidate,
   });
 }

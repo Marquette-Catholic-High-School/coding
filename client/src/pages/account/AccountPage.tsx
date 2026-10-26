@@ -12,6 +12,7 @@ import { notifyError, notifySuccess } from '../../components/notify';
 import { PageHeader } from '../../components/PageHeader';
 import { usePageTitle } from '../../hooks/usePageTitle';
 import { withPasswordConfirm } from '../auth/formValidation';
+import { profileJoinNotice } from '../auth/joinedClasses';
 
 const validateProfile = schemaResolver(updateProfileSchema, { sync: true });
 const validatePassword = withPasswordConfirm(
@@ -63,10 +64,13 @@ function ProfileCard({ user }: { user: User }) {
 
   const handleSubmit = form.onSubmit((values) => {
     updateProfile.mutate(values, {
-      onSuccess: ({ user: saved }) => {
+      onSuccess: ({ user: saved, joinedClasses }) => {
         form.setValues({ name: saved.name, email: saved.email ?? '' });
         form.resetDirty();
         notifySuccess('Profile saved');
+        // A student who saves an email address a teacher added joins those classes.
+        const joined = profileJoinNotice(joinedClasses);
+        if (joined) notifySuccess(joined.title, joined.message);
       },
       onError: (err) => {
         const errors = fieldErrors(err);
@@ -109,7 +113,11 @@ function ProfileCard({ user }: { user: User }) {
           <TextInput label="Name" placeholder="e.g. Sam Patel" required autoComplete="name" key={form.key('name')} {...form.getInputProps('name')} />
           <TextInput
             label="Email"
-            description="Optional. You can sign in with it instead of your username."
+            description={
+              user.role === 'student'
+                ? "Optional. You can sign in with it instead of your username, and if a teacher added it to a class, you'll join that class."
+                : 'Optional. You can sign in with it instead of your username.'
+            }
             placeholder="e.g. sam.patel@school.org"
             type="email"
             autoComplete="email"

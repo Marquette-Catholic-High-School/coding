@@ -42,7 +42,7 @@ export function useLogin() {
   });
 }
 
-/** Student self-registration with a class code. */
+/** Student self-registration with a class code and/or an email address a teacher added (`joinedClasses` says which). */
 export function useRegister() {
   const { setUser } = useAuth();
   return useMutation({
@@ -61,9 +61,17 @@ export function useChangePassword() {
 
 export function useUpdateProfile() {
   const { setUser } = useAuth();
+  const qc = useQueryClient();
   return useMutation({
     mutationFn: (input: UpdateProfileInput) => api.patch<UserResponse>('/auth/profile', input),
-    onSuccess: ({ user }) => setUser(user),
+    onSuccess: ({ user, joinedClasses }) => {
+      setUser(user);
+      // Saving an email address a teacher added enrolls the student in those classes.
+      if (joinedClasses?.length) {
+        void qc.invalidateQueries({ queryKey: queryKeys.classes.all });
+        void qc.invalidateQueries({ queryKey: queryKeys.dashboard });
+      }
+    },
   });
 }
 

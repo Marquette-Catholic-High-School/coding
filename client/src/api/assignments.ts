@@ -1,6 +1,8 @@
 import type {
   AssignmentInput,
   AssignmentResponse,
+  CopyAssignmentsInput,
+  CopyAssignmentsResponse,
   AssignmentsResponse,
   GradeSubmissionInput,
   OkResponse,
@@ -125,5 +127,19 @@ export function useGradeSubmission(assignmentId: number) {
     mutationFn: ({ studentId, ...input }: GradeSubmissionInput & { studentId: number }) =>
       api.patch<SubmissionResponse>(`/assignments/${assignmentId}/submissions/${studentId}`, input),
     onSuccess: invalidate,
+  });
+}
+
+/** Copy assignments from other classes (or this one) into class `classId`. */
+export function useCopyAssignments(classId: number) {
+  const qc = useQueryClient();
+  const invalidate = useInvalidateAssignments();
+  return useMutation({
+    mutationFn: (input: CopyAssignmentsInput) => api.post<CopyAssignmentsResponse>(`/classes/${classId}/assignments/copy`, input),
+    onSuccess: () => {
+      void invalidate();
+      // A copy may have added a language to the class.
+      void qc.invalidateQueries({ queryKey: queryKeys.languages.all });
+    },
   });
 }

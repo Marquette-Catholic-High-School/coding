@@ -100,6 +100,20 @@ export interface ProjectRow {
   updated_at: string;
 }
 
+/** An email a teacher added to a class; pending until claimed (claimed_at set) by a student account with that email. */
+export interface ClassInviteRow {
+  id: number;
+  class_id: number;
+  /** Lowercased; the column is COLLATE NOCASE. */
+  email: string;
+  name: string;
+  invited_by: number | null;
+  created_at: string;
+  /** The student who joined through it (null while pending, or once that account is deleted). */
+  claimed_by: number | null;
+  claimed_at: string | null;
+}
+
 const NOW = "(strftime('%Y-%m-%dT%H:%M:%fZ','now'))";
 /** Column definition shared by SCHEMA and migrate(). */
 const SOLUTION_VISIBILITY_COLUMN =
@@ -164,6 +178,21 @@ CREATE TABLE IF NOT EXISTS enrollments (
   PRIMARY KEY (class_id, user_id)
 );
 CREATE INDEX IF NOT EXISTS enrollments_user ON enrollments(user_id);
+
+-- Students invited by email (spreadsheet import). claimed_at stays set when the claiming account is deleted, so a
+-- joined invite is never re-opened.
+CREATE TABLE IF NOT EXISTS class_invites (
+  id INTEGER PRIMARY KEY,
+  class_id INTEGER NOT NULL REFERENCES classes(id) ON DELETE CASCADE,
+  email TEXT NOT NULL COLLATE NOCASE,
+  name TEXT NOT NULL DEFAULT '',
+  invited_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL DEFAULT ${NOW},
+  claimed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  claimed_at TEXT,
+  UNIQUE (class_id, email)
+);
+CREATE INDEX IF NOT EXISTS class_invites_email ON class_invites(email);
 
 CREATE TABLE IF NOT EXISTS assignments (
   id INTEGER PRIMARY KEY,

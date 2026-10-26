@@ -1,7 +1,14 @@
 // Every status indicator in the app is a Badge from this file (style guide §4 "Status badges").
 
 import { Badge, Text, Tooltip, type BadgeProps, type MantineColor } from '@mantine/core';
-import { SOLUTION_VISIBILITY_LABELS, type LanguageKind, type Role, type SolutionVisibility, type SubmissionStatus } from '@codeclass/shared';
+import {
+  SOLUTION_VISIBILITY_LABELS,
+  type InviteOutcome,
+  type LanguageKind,
+  type Role,
+  type SolutionVisibility,
+  type SubmissionStatus,
+} from '@codeclass/shared';
 import {
   IconArchive,
   IconBulb,
@@ -10,9 +17,15 @@ import {
   IconCheck,
   IconCircleOff,
   IconClockExclamation,
+  IconCopy,
   IconEyeOff,
   IconKey,
   IconLock,
+  IconMail,
+  IconMailForward,
+  IconMailOff,
+  IconUserCheck,
+  IconUserOff,
 } from '@tabler/icons-react';
 import dayjs from 'dayjs';
 import type { ReactNode } from 'react';
@@ -127,6 +140,43 @@ export function TemporaryPasswordBadge() {
     <Tooltip label="Still using the temporary password you gave them. They'll choose their own after signing in." multiline maw={300}>
       <Badge variant="light" color="grape" size="sm" leftSection={<IconKey size={12} />} {...BADGE_NO_SHRINK}>
         Temp password
+      </Badge>
+    </Tooltip>
+  );
+}
+
+const INVITE_OUTCOME: Record<InviteOutcome, { label: string; color: MantineColor; icon: ReactNode; tip: string }> = {
+  enrolled: {
+    label: 'Added now',
+    color: 'teal',
+    icon: <IconUserCheck size={12} />,
+    tip: 'A student account already uses this email, so they are added to the class right away.',
+  },
+  invited: {
+    label: 'Joins when they sign up',
+    color: 'grape',
+    icon: <IconMailForward size={12} />,
+    tip: 'No account uses this email yet. They join the class as soon as they sign up with it, or add it to their account.',
+  },
+  already_enrolled: { label: 'Already in class', color: 'gray', icon: <IconCheck size={12} />, tip: 'This student is already in the class.' },
+  already_invited: { label: 'Already invited', color: 'gray', icon: <IconMail size={12} />, tip: "This email is already on the class's invite list." },
+  not_a_student: {
+    label: 'Teacher account — skipped',
+    color: 'orange',
+    icon: <IconUserOff size={12} />,
+    tip: "This email belongs to a teacher or admin account, so it can't be added as a student.",
+  },
+  invalid: { label: 'Not an email', color: 'red', icon: <IconMailOff size={12} />, tip: "This isn't an email address, so the row is skipped." },
+  duplicate: { label: 'Duplicate', color: 'gray', icon: <IconCopy size={12} />, tip: 'This email appears earlier in the list, so the row is skipped.' },
+};
+
+/** What importing one spreadsheet row does (Students tab → "Import from spreadsheet"). */
+export function InviteOutcomeBadge({ outcome }: { outcome: InviteOutcome }) {
+  const o = INVITE_OUTCOME[outcome];
+  return (
+    <Tooltip label={o.tip} multiline maw={300}>
+      <Badge variant="light" size="sm" color={o.color} tt="none" leftSection={o.icon} {...BADGE_NO_SHRINK}>
+        {o.label}
       </Badge>
     </Tooltip>
   );

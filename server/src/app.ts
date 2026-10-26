@@ -12,6 +12,7 @@ import { router as assignmentsRouter } from './routes/assignments';
 import { router as authRouter } from './routes/auth';
 import { router as classesRouter } from './routes/classes';
 import { router as dashboardRouter } from './routes/dashboard';
+import { router as invitesRouter } from './routes/invites';
 import { router as languagesRouter } from './routes/languages';
 import { router as projectsRouter } from './routes/projects';
 import { router as rosterRouter } from './routes/roster';
@@ -95,6 +96,7 @@ export function createApp() {
   api.use(languagesRouter);
   api.use(classesRouter);
   api.use(rosterRouter);
+  api.use(invitesRouter);
   api.use(assignmentsRouter);
   api.use(submissionsRouter);
   api.use(projectsRouter);

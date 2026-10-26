@@ -1,12 +1,15 @@
-// Assignments: class assignment lists, create/read/update/delete (ARCHITECTURE §7.3).
+// Assignments: class assignment lists, create/read/update/delete, copying between classes (ARCHITECTURE §7.3).
 
 import {
   assignmentInputSchema,
+  copyAssignmentsSchema,
   kindSupportsTests,
+  SOLUTION_VISIBILITY_LABELS,
   updateAssignmentSchema,
   type AssignmentListItem,
   type AssignmentResponse,
   type AssignmentsResponse,
+  type CopyAssignmentsResponse,
   type LanguageKind,
   type OkResponse,
   type SolutionVisibility,
@@ -18,7 +21,7 @@ import { Router } from 'express';
 import { canManageClass, loadAssignmentForMember, loadAssignmentForStaff, loadClassForMember, loadClassForStaff } from '../access';
 import { currentUser, isStaff, requireAuth, requireStaff } from '../auth';
 import { db, nowIso, type AssignmentRow, type ClassRow, type LanguageRow, type SubmissionDbRow } from '../db';
-import { badRequest, parseBody, parseId } from '../http';
+import { badRequest, notFound, parseBody, parseId } from '../http';
 import { hideHiddenTestResults, isLate, LANGUAGE_SELECT, parseTests, toAssignment, toLanguage, toSubmission, type LanguageQueryRow } from '../mappers';
 
 export const router = Router();
@@ -292,4 +295,99 @@ router.delete('/assignments/:id', requireStaff, (req, res) => {
   const { assignment } = loadAssignmentForStaff(parseId(req.params.id as string), user);
   db.prepare('DELETE FROM assignments WHERE id = ?').run(assignment.id);
   res.json({ ok: true } satisfies OkResponse);
+});
+
+// --- Copy between classes ---------------------------------------------------------------------------
+
+const COPY_SUFFIX = ' (copy)';
+/** assignmentInputSchema's title limit. */
+const MAX_TITLE_LENGTH = 120;
+
+/** "Title" → "Title (copy)", shortening the title so the result still fits. */
+function copyTitle(title: string): string {
+  const room = MAX_TITLE_LENGTH - COPY_SUFFIX.length;
+  // Never leave half of a surrogate pair at the cut.
+  const base = title.length > room ? title.slice(0, room).replace(/[\uD800-\uDBFF]$/, '').trimEnd() : title;
+  return base + COPY_SUFFIX;
+}
+
+router.post('/classes/:id/assignments/copy', requireStaff, (req, res) => {
+  const user = currentUser(req);
+  const cls = loadClassForStaff(parseId(req.params.id as string), user);
+  const input = parseBody(copyAssignmentsSchema, req.body);
+
+  const result = db.transaction((): CopyAssignmentsResponse => {
+    // Every source must be in a class the caller manages (archived classes included), else nothing is copied. Other
+    // teachers' assignments look missing rather than forbidden so their ids can't be probed. Repeated ids copy once.
+    const getAssignment = db.prepare('SELECT * FROM assignments WHERE id = ?');
+    const getClass = db.prepare('SELECT * FROM classes WHERE id = ?');
+    const sources = [...new Set(input.assignmentIds)].map((id) => {
+      const row = getAssignment.get(id) as AssignmentRow | undefined;
+      const owner = row && (getClass.get(row.class_id) as ClassRow | undefined);
+      if (!row || !owner || !canManageClass(owner, user)) throw notFound('Assignment not found');
+      return row;
+    });
+
+    const classLanguages = new Set(
+      db.prepare('SELECT language_id FROM class_languages WHERE class_id = ?').pluck().all(cls.id) as string[],
+    );
+    const getLanguage = db.prepare('SELECT * FROM languages WHERE id = ?');
+    const addLanguage = db.prepare('INSERT INTO class_languages (class_id, language_id) VALUES (?, ?)');
+    const insert = db.prepare(
+      `INSERT INTO assignments
+        (class_id, title, instructions, language_id, starter_code, due_at, points, published, allow_late, tests, compare_mode,
+         solution_code, solution_visibility, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    const now = nowIso();
+    const out: CopyAssignmentsResponse = { copied: [], addedLanguageIds: [], skipped: [], notes: [] };
+
+    for (const src of sources) {
+      // Like a new assignment, a copy needs an installed, enabled language — even one the class already has.
+      const language = getLanguage.get(src.language_id) as LanguageRow | undefined;
+      if (!language || language.enabled !== 1) {
+        const reason = language ? `${language.name} is turned off` : "Its language isn't installed any more";
+        out.skipped.push({ sourceId: src.id, title: src.title, reason });
+        continue;
+      }
+      if (!classLanguages.has(language.id)) {
+        addLanguage.run(cls.id, language.id);
+        classLanguages.add(language.id);
+        out.addedLanguageIds.push(language.id);
+      }
+
+      const title = src.class_id === cls.id ? copyTitle(src.title) : src.title;
+      const dueAt = input.keepDueDates ? src.due_at : null;
+      let visibility = src.solution_visibility;
+      if (visibility === 'after_due' && dueAt == null) {
+        visibility = 'hidden';
+        if (src.solution_code.trim() !== '') {
+          const { after_due: before, hidden: after } = SOLUTION_VISIBILITY_LABELS;
+          out.notes.push(`"${title}" has no due date, so its solution is now "${after.label}" instead of "${before.label}".`);
+        }
+      }
+
+      const info = insert.run(
+        cls.id,
+        title,
+        src.instructions,
+        src.language_id,
+        src.starter_code,
+        dueAt,
+        src.points,
+        input.publish ? 1 : 0,
+        src.allow_late,
+        src.tests,
+        src.compare_mode,
+        src.solution_code,
+        visibility,
+        now,
+        now,
+      );
+      out.copied.push({ sourceId: src.id, id: Number(info.lastInsertRowid), title });
+    }
+    if (out.addedLanguageIds.length > 0) db.prepare('UPDATE classes SET updated_at = ? WHERE id = ?').run(now, cls.id);
+    return out;
+  })();
+  res.status(201).json(result);
 });

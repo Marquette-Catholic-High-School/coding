@@ -1,7 +1,8 @@
-// Sign in/out, the current user, student self-registration, the public join preview, password and profile.
+// Sign in/out, the current user, student self-registration (class code or invited email), the public join preview,
+// password and profile.
 
 import crypto from 'node:crypto';
-import { Router, type Request } from 'express';
+import { Router, type Request, type Response } from 'express';
 import {
   changePasswordSchema,
   loginSchema,
@@ -13,7 +14,8 @@ import {
 } from '@codeclass/shared';
 import { currentUser, endOtherSessions, endSession, hashPassword, requireAuth, startSession, verifyPassword } from '../auth';
 import { db, type ClassRow, type UserRow } from '../db';
-import { badRequest, conflict, notFound, parseBody, unauthorized } from '../http';
+import { badRequest, conflict, HttpError, notFound, parseBody, unauthorized } from '../http';
+import { claimInvites, hasPendingInvites, type JoinedClass } from '../invites';
 import { toUser } from '../mappers';
 import { checkJoinCodeAttempts, FailureLimiter, recordJoinCodeMiss } from '../rateLimit';
 
@@ -43,6 +45,22 @@ export function usernameTaken(username: string, exceptId?: number): boolean {
 
 export function emailTaken(email: string, exceptId?: number): boolean {
   return !!db.prepare('SELECT 1 FROM users WHERE email = ? AND id IS NOT ?').get(email, exceptId ?? null);
+}
+
+const EMAIL_TAKEN_MESSAGE = 'Another account already uses this email';
+
+/**
+ * Registering without a class code: an email that no class invited counts as a wrong class code (one budget of misses
+ * per IP), so invited addresses can't be probed endlessly. Same check as checkJoinCodeAttempts, worded for the email.
+ */
+function checkInvitedEmailAttempts(req: Request, res: Response): void {
+  try {
+    checkJoinCodeAttempts(req, res, 'email');
+  } catch (err) {
+    if (!(err instanceof HttpError) || err.status !== 429) throw err;
+    const message = 'Too many tries. Please wait a few minutes and try again.';
+    throw new HttpError(429, message, { email: message });
+  }
 }
 
 function loadUserRow(id: number): UserRow {
@@ -88,33 +106,55 @@ router.get('/auth/me', requireAuth, (req, res) => {
 router.post('/auth/register', (req, res) => {
   const input = parseBody(registerSchema, req.body);
 
-  checkJoinCodeAttempts(req, res, 'joinCode');
-  const cls = db.prepare('SELECT * FROM classes WHERE join_code = ?').get(input.joinCode) as ClassRow | undefined;
-  if (!cls) {
-    recordJoinCodeMiss(req);
-    const message = "We couldn't find a class with that code. Check it with your teacher.";
-    throw badRequest(message, { joinCode: message });
+  let cls: ClassRow | undefined;
+  if (input.joinCode) {
+    checkJoinCodeAttempts(req, res, 'joinCode');
+    cls = db.prepare('SELECT * FROM classes WHERE join_code = ?').get(input.joinCode) as ClassRow | undefined;
+    if (!cls) {
+      recordJoinCodeMiss(req);
+      const message = "We couldn't find a class with that code. Check it with your teacher.";
+      throw badRequest(message, { joinCode: message });
+    }
+    if (cls.archived === 1 || cls.join_enabled === 0) {
+      const message = "This class isn't accepting new students right now. Ask your teacher.";
+      throw badRequest(message, { joinCode: message });
+    }
   }
-  if (cls.archived === 1 || cls.join_enabled === 0) {
-    const message = "This class isn't accepting new students right now. Ask your teacher.";
-    throw badRequest(message, { joinCode: message });
+  // Every email check counts towards the per-IP limit, so sign-up can't be used to find out which emails have
+  // accounts or invitations.
+  if (input.email || !cls) checkInvitedEmailAttempts(req, res);
+  if (input.email && emailTaken(input.email)) {
+    recordJoinCodeMiss(req);
+    throw conflict('That email is already used by another account', { email: EMAIL_TAKEN_MESSAGE });
+  }
+  // Without a class code, the email is what puts the student in a class, so a teacher must have invited it.
+  if (!cls && (!input.email || !hasPendingInvites(input.email))) {
+    recordJoinCodeMiss(req);
+    const message = 'No class has invited this email yet. Check the spelling, or use the class code from your teacher.';
+    throw badRequest(message, { email: message });
   }
 
   const passwordHash = hashPassword(input.password);
-  const user = db.transaction(() => {
+  const { user, joinedClasses } = db.transaction(() => {
     if (usernameTaken(input.username)) {
       throw conflict('That username is already taken', { username: 'That username is already taken — try another' });
     }
     const info = db
-      .prepare("INSERT INTO users (username, name, role, password_hash) VALUES (?, ?, 'student', ?)")
-      .run(input.username, input.name, passwordHash);
+      .prepare("INSERT INTO users (username, email, name, role, password_hash) VALUES (?, ?, ?, 'student', ?)")
+      .run(input.username, input.email, input.name, passwordHash);
     const userId = Number(info.lastInsertRowid);
-    db.prepare('INSERT INTO enrollments (class_id, user_id) VALUES (?, ?)').run(cls.id, userId);
-    return db.prepare('SELECT * FROM users WHERE id = ?').get(userId) as UserRow;
+    const joined: JoinedClass[] = [];
+    if (cls) {
+      db.prepare('INSERT INTO enrollments (class_id, user_id) VALUES (?, ?)').run(cls.id, userId);
+      joined.push({ id: cls.id, name: cls.name });
+    }
+    // Every class that invited this email (including the code's class, whose invite is marked as joined).
+    joined.push(...claimInvites(userId, input.email));
+    return { user: db.prepare('SELECT * FROM users WHERE id = ?').get(userId) as UserRow, joinedClasses: joined };
   })();
 
   startSession(res, user.id);
-  res.status(201).json({ user: toUser(user) } satisfies UserResponse);
+  res.status(201).json({ user: toUser(user), joinedClasses } satisfies UserResponse);
 });
 
 router.get('/join/:code', (req, res) => {
@@ -164,12 +204,19 @@ router.patch('/auth/profile', requireAuth, (req, res) => {
   // The schema maps a missing email to null; only clear it when the client actually sent an empty value.
   const email = (req.body as { email?: unknown } | undefined)?.email === undefined ? user.email : input.email;
 
-  const row = db.transaction(() => {
-    if (email && emailTaken(email, user.id)) {
-      throw conflict('That email is already used by another account', { email: 'Another account already uses this email' });
-    }
+  const emailChanged = email !== null && email.toLowerCase() !== user.email?.toLowerCase();
+  // A student trying out emails could find accounts and invitations: count those changes like sign-up attempts.
+  const limited = emailChanged && user.role === 'student';
+  if (limited) checkInvitedEmailAttempts(req, res);
+  if (email && emailTaken(email, user.id)) {
+    if (limited) recordJoinCodeMiss(req);
+    throw conflict('That email is already used by another account', { email: EMAIL_TAKEN_MESSAGE });
+  }
+  const { row, joinedClasses } = db.transaction(() => {
     db.prepare('UPDATE users SET name = ?, email = ? WHERE id = ?').run(input.name, email, user.id);
-    return loadUserRow(user.id);
+    // A student who takes an invited email joins those classes (claimInvites skips staff accounts).
+    return { row: loadUserRow(user.id), joinedClasses: emailChanged ? claimInvites(user.id, email) : [] };
   })();
-  res.json({ user: toUser(row) } satisfies UserResponse);
+  if (limited && joinedClasses.length === 0) recordJoinCodeMiss(req);
+  res.json({ user: toUser(row), joinedClasses } satisfies UserResponse);
 });

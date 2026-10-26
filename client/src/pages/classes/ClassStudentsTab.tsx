@@ -18,7 +18,16 @@ import {
 } from '@mantine/core';
 import { useDisclosure } from '@mantine/hooks';
 import type { ClassSummary, RosterStudent } from '@codeclass/shared';
-import { IconAlertTriangle, IconClockExclamation, IconDots, IconKey, IconUserMinus, IconUserPlus, IconUsers } from '@tabler/icons-react';
+import {
+  IconAlertTriangle,
+  IconClockExclamation,
+  IconDots,
+  IconFileSpreadsheet,
+  IconKey,
+  IconUserMinus,
+  IconUserPlus,
+  IconUsers,
+} from '@tabler/icons-react';
 import { useState } from 'react';
 import { useRemoveStudent, useResetStudentPassword, useRoster } from '../../api/classes';
 import { CopyIconButton } from '../../components/CopyIconButton';
@@ -29,6 +38,8 @@ import { RelativeTime } from '../../components/RelativeTime';
 import { TemporaryPasswordModal } from '../../components/TemporaryPasswordModal';
 import { AddStudentModal } from './AddStudentModal';
 import { confirmAction } from './confirmAction';
+import { ImportStudentsModal } from './ImportStudentsModal';
+import { InvitesCard } from './InvitesCard';
 
 type Credentials = { name: string; username: string; password: string };
 
@@ -76,6 +87,7 @@ export function ClassStudentsTab({ cls }: { cls: ClassSummary }) {
   const resetPassword = useResetStudentPassword(cls.id);
   const removeStudent = useRemoveStudent(cls.id);
   const [addOpened, addModal] = useDisclosure(false);
+  const [importOpened, importModal] = useDisclosure(false);
   const [credentials, setCredentials] = useState<Credentials | null>(null);
 
   const confirmReset = (s: RosterStudent) =>
@@ -111,13 +123,18 @@ export function ClassStudentsTab({ cls }: { cls: ClassSummary }) {
   return (
     <>
       <JoinInstructions cls={cls} />
-      <Group justify="space-between" mb="sm">
+      <Group justify="space-between" mb="sm" gap="sm">
         <Title order={3} fz="h4">
           Students
         </Title>
-        <Button variant="light" leftSection={<IconUserPlus size={18} />} onClick={addModal.open}>
-          Add student
-        </Button>
+        <Group gap="sm">
+          <Button variant="default" leftSection={<IconFileSpreadsheet size={18} />} onClick={importModal.open}>
+            Import from spreadsheet
+          </Button>
+          <Button variant="light" leftSection={<IconUserPlus size={18} />} onClick={addModal.open}>
+            Add student
+          </Button>
+        </Group>
       </Group>
       <QueryState query={roster}>
         {({ students }) =>
@@ -129,11 +146,14 @@ export function ClassStudentsTab({ cls }: { cls: ClassSummary }) {
                 size="lg"
                 icon={<IconUsers size={32} />}
                 title="No students yet"
-                description="Share the join link above, or add students yourself and hand out their temporary passwords."
+                description="Share the join link above, import a spreadsheet of their email addresses, or add students yourself and hand out their temporary passwords."
               >
                 <EmptyState.Actions>
                   <Button leftSection={<IconUserPlus size={18} />} onClick={addModal.open}>
                     Add student
+                  </Button>
+                  <Button variant="default" leftSection={<IconFileSpreadsheet size={18} />} onClick={importModal.open}>
+                    Import from spreadsheet
                   </Button>
                 </EmptyState.Actions>
               </EmptyState>
@@ -220,6 +240,8 @@ export function ClassStudentsTab({ cls }: { cls: ClassSummary }) {
           )
         }
       </QueryState>
+      <InvitesCard cls={cls} />
+      <ImportStudentsModal cls={cls} opened={importOpened} onClose={importModal.close} />
       <AddStudentModal
         classId={cls.id}
         className={cls.name}

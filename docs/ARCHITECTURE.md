@@ -45,7 +45,7 @@ Imports are extensionless (`moduleResolution: bundler`; tsx and Vite resolve `.t
 - `client/src/ide/types.ts` — IDE component props (`CodeEditor`, `CodeWorkspace`, `WordBank`, `WebPreview`).
 - `client/src/components/*` — PageHeader, QueryState/PageLoader/ErrorAlert, NotFoundCard, CopyIconButton, StatCard,
   badges (status/late/draft/due/language/count/tab-count/code/role/score, plus archived/joining-off/temp-password/
-  language-disabled/unavailable-language/installed/not-learned), LanguageIcon, Markdown, BrandMark, notify, cards.module.css,
+  language-disabled/unavailable-language/installed/not-learned/invite-outcome), LanguageIcon, Markdown, BrandMark, notify, cards.module.css,
   RelativeTime ("in 3 days" + absolute tooltip), TemporaryPasswordModal (one-time credentials with copy buttons).
 
 If a contract is genuinely wrong or missing something, make the smallest additive change and mention it in your
@@ -229,21 +229,31 @@ CALL, MOD/DIV, LENGTH, `&` concatenation),
 - **Login** by username or email (case-insensitive; `login` ≤ 254 chars, `password` ≤ 200). Wrong credentials → 401
   `Incorrect username or password` (no user enumeration). In-memory rate limit (`server/src/rateLimit.ts`):
   10 failures / 10 min per IP + hashed login → 429 with `Retry-After`.
-- **Student registration** (`POST /api/auth/register`): join code must belong to a class that is join-enabled and not
-  archived (else 400 `fieldErrors.joinCode`); username taken → 409 `fieldErrors.username`. Creates the student,
-  enrolls, signs in. `GET /api/join/:code` is a public preview (404 when unknown). Unknown class codes on the
-  preview, registration and `POST /classes/join` share a per-IP budget of 60 misses / 10 min → 429 (matching codes
-  don't count).
+- **Student registration** (`POST /api/auth/register`): a class code and/or an invited email. A code must belong to a
+  class that is join-enabled and not archived (else 400 `fieldErrors.joinCode`); an email used by another account →
+  409 `fieldErrors.email`; without a code the email needs a pending invite in a non-archived class (else 400
+  `fieldErrors.email`); username taken → 409 `fieldErrors.username`. Creates the student (storing the email), enrolls
+  via the code and `claimInvites` in one transaction, signs in, and returns `joinedClasses`. `GET /api/join/:code` is
+  a public preview (404 when unknown). Unknown class codes on the preview, registration and `POST /classes/join`, and
+  uninvited emails on registration, share a per-IP budget of 60 misses / 10 min → 429 (matches don't count).
 - **Change password** verifies the current one (400 `fieldErrors.currentPassword`), clears `must_change_password`,
-  and ends the user's other sessions. **Profile**: name + optional email (unique → 409 `fieldErrors.email`).
+  and ends the user's other sessions. **Profile**: name + optional email (unique → 409 `fieldErrors.email`); a student
+  whose email changes claims that email's invites (`joinedClasses`).
 - **Users admin** (admin only): list with `classCount` (classes owned for staff, enrolled for students), create
   (temporary password via `generateTemporaryPassword()`, `must_change_password = 1`), edit (no self role change;
   at least one admin must remain), reset password (ends their sessions; not for yourself), delete (not yourself;
-  409 for teachers who still own classes).
+  409 for teachers who still own classes). Creating a student with an email, or giving a student (or an account that
+  becomes one) a new email, claims that email's invites.
 - UI: `SetupPage` (redirect to /login when not needed), `LoginPage` (redirect to /setup when needed; honours
   `?next=`; link to /join), `JoinPage` (/join and /join/:code — signed out: code + live class preview, then create
-  account; signed-in student: join directly; staff: explain they can't join), `AccountPage` (profile, password,
-  temp-password alert), `UsersPage` (tabs by role, table, create/edit/reset/delete, one-time temporary password modal
+  account with an optional "School email" that also joins classes that invited it; or "My teacher added my email
+  instead" (opened directly by `/join?email=1`, ignored when the link has a code) → account step without a code and a
+  required email; `validateJoinAccount` in `formValidation.ts` (the refined `registerSchema` can't be `.omit()`ed);
+  `joinCode`/`email` field errors inline; afterwards a notice naming `joinedClasses` (`joinedClasses.ts`) and
+  navigation into the class when exactly one was joined, else /dashboard; signed-in student: join directly (with
+  `?email=1`, a hint to add the email on the account page); staff: explain they can't join), `AccountPage` (profile,
+  password, temp-password alert; saving an email that returns `joinedClasses` shows a notice naming them and
+  `useUpdateProfile` refreshes classes + dashboard), `UsersPage` (tabs by role, table, create/edit/reset/delete, one-time temporary password modal
   with copy button).
 
 ### 7.2 Classes, roster, dashboards
@@ -259,6 +269,20 @@ CALL, MOD/DIV, LENGTH, `&` concatenation),
   username → 409 `fieldErrors.username`. Remove = un-enroll only (work is kept).
   Reset password only for students enrolled in that class; a teacher (not an admin) gets 403 when the student is also
   in another teacher's class, since one password guards all their classes.
+- Invitations by email (`server/src/routes/invites.ts`, table `class_invites`, staff of the class): `GET` lists pending
+  invites first (newest first), then joined ones (latest join first) with who joined. `POST` imports
+  `importInvitesSchema` entries: each email is checked with `z.email()` and lowercased, repeats in the list are
+  `duplicate`; an existing student account (case-insensitive) is enrolled now and its invite stored as joined (audit
+  trail), staff emails are `not_a_student`, other emails become pending invites; `already_enrolled` /
+  `already_invited` change nothing; `dryRun` returns the same rows and counts without writing (it names the matching
+  student account only to admins or to staff who teach that student). Importing into an archived class → 409.
+  `DELETE` removes one
+  invite of that class (404 otherwise; a joined student stays enrolled). `claimInvites(userId, email)`
+  (`server/src/invites.ts`, students only) enrolls in every non-archived class with a pending invite for the email
+  (join-enabled not required) and marks those invites joined (`claimed_by`, `claimed_at`). An invite counts as open
+  (`INVITE_OPEN_SQL`) while unclaimed, or once the account that claimed it is deleted or no longer has that email, so
+  the address can be claimed again. There is no email verification, so anyone who knows an invited address can claim
+  it; the invite list shows which account joined and when.
 - Dashboards (`GET /api/dashboard`): staff → stats (classes, distinct students, to-grade = status submitted,
   late/missing = (student, published assignment) pairs where `isLate`), `toGrade` (10 oldest submitted),
   `upcoming` (published, due in the next 14 days, soonest first, max 8), `classes` (non-archived). Student →
@@ -266,8 +290,19 @@ CALL, MOD/DIV, LENGTH, `&` concatenation),
   non-archived classes (not-submitted first by due date with no-due last, then submitted, then graded).
 - UI: `TeacherClassesPage` (Active/Archived, link-card grid, first-run empty state, `CreateClassModal` exported from
   `pages/classes/CreateClassModal.tsx` for reuse; it requires at least one language), `TeacherClassPage` (header with big join-code chip + copy,
-  "New assignment"; tabs Assignments | Students | Settings: assignment table with progress/late/to-grade/draft,
-  roster with add/reset/remove + shareable join link `${origin}/join/${code}`, settings form for name/description/
+  "New assignment"; tabs Assignments | Students | Settings: assignment table with progress/late/to-grade/draft and
+  "Copy from another class" (`CopyAssignmentsModal`: source Select of active, then archived classes, this class last;
+  checklist with select all; "Keep due dates" / "Publish straight away" switches, both off; warnings for languages
+  the copy adds to the class or that are turned off (`copyAssignments.ts`); a summary notification, and skipped
+  assignments stay listed with their reasons in the dialog),
+  roster with add/reset/remove + shareable join link `${origin}/join/${code}`; "Import from spreadsheet"
+  (`ImportStudentsModal`: FileDropzone for .csv/.txt/.tsv up to 1 MB or a pasted list, parsed in the browser by
+  `csv.ts` — hand-written RFC 4180 parser, `,`/`;`/tab detection, BOM, UTF-16/Windows-1252 decoding, header and
+  email/name column detection, plain "Name <email>" / "name, email" lists — then a dry run preview with
+  `InviteOutcomeBadge` per row and totals (`importSummary.ts`), then the import and a "4 added now, 18 will join when
+  they sign up" notification); `InvitesCard` below the roster (only when the class has invites: waiting / joined
+  views, remove a pending invite with a confirm, joined rows show the account and when, "Copy sign-up link"
+  `${origin}/join?email=1`, the no-verification trade-off in one sentence), settings form for name/description/
   languages/join-enabled, regenerate code, archive, delete), `TeacherDashboard` (StatCards, needs-grading list,
   due-soon list with progress, classes grid, first-run empty state).
 
@@ -286,6 +321,14 @@ CALL, MOD/DIV, LENGTH, `&` concatenation),
   return an `Assignment`; the student submission endpoints return just the submission.
 - `GET /classes/:id/assignments` order: due date ascending (no due date last), then newest. Staff rows carry class
   counts; student rows carry `myStatus/myLate/myGrade` and only published assignments.
+- Copy (`POST /classes/:id/assignments/copy`, `copyAssignmentsSchema`): the caller must manage class :id (403/404 like
+  create) and every source's class (archived included); an unknown source or another teacher's → 404 and nothing is
+  copied (one transaction). Copies are made in `assignmentIds` order (a repeated id copies once) with fresh
+  timestamps, test ids kept and no submissions; `published` = `publish`; `due_at` only with `keepDueDates`, and an
+  `after_due` solution without a due date becomes `hidden` (a `notes` entry when the solution isn't blank). Like
+  create, a copy needs an installed, enabled language: a missing one is added to `class_languages`
+  (`addedLanguageIds`, class `updated_at` bumped), a disabled or uninstalled one is `skipped` with a reason — even
+  when the class already has it. Same-class copies get " (copy)" (title cut to stay ≤ 120). Always 201.
 - Student work: `GET/PUT /assignments/:id/submission` (PUT 409 when submitted — "Unsubmit to keep editing" — or
   graded), `POST /submit` (409 when graded, or past due with `allowLate` false unless the work was returned; stores
   visible-test results and `autoScore = computeAutoScore(visibleTests, results)`, which weights tests by points —

@@ -23,11 +23,16 @@ JavaScript, Python and a *Classroom Pseudocode* language.
 2. **Classes → New class**: pick the languages the class may use.
 3. Share the class code or the join link (`/join/ABC123`) with students. They create their own accounts. You can also
    add students yourself from the class's **Students** tab, which hands out temporary passwords.
+   **Import from spreadsheet** takes a CSV (or a pasted list) of student email addresses. Students who already have an
+   account with that email join straight away. Everyone else joins automatically when they sign up with that exact
+   email at `/join?email=1` (**Copy sign-up link**) or add it on their Account page.
 4. **New assignment**: write instructions (Markdown), choose the language, add starter code and input/output tests.
    You can mark tests as hidden, and **Fill expected outputs from a model solution** fills them in for you.
    Add your own **solution** too: **Check solution** runs it against every test. You see it beside each student's
    work while grading, and you choose when students see it: never, after the due date, once their work is graded, or
    straight away.
+   **Copy from another class** on the **Assignments** tab copies assignments, with their tests and solutions, from
+   any of your classes. Copies start as drafts with no due date unless you choose otherwise.
 5. Students code, run tests and submit. You grade from the assignment page. **Autograde all** runs every test,
    hidden ones included, against every submission.
 
@@ -175,6 +180,8 @@ npm test            # vitest: engine, server API, runtime and IDE helpers
 - Test results that students see are computed in their browser, so a determined student could fake them. Hidden tests
   never leave the server for students, and **Autograde all** re-runs every test in the teacher's browser. Use those
   results when grading.
+- CodeClass doesn't send email, so it can't confirm that a student owns the email address they sign up with. Anyone
+  who signs up with an invited address joins that class, so check the **Joined** list under **Invited by email**.
 - Python needs the jsDelivr CDN on its first run in each browser. All other runtimes are bundled.
 - Interactive input needs a modern browser with cross-origin isolation (current Chrome, Edge, Firefox and Safari).
   Without it, programs read from an "Input for your program" box instead.

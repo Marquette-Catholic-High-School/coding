@@ -231,7 +231,7 @@ describe('register and join preview', () => {
 
   it('creates a student, enrolls them and signs them in', async () => {
     const teacher = insertUser('teacher');
-    const cls = insertClass(teacher.id);
+    const cls = insertClass(teacher.id, { name: "Lin's class" });
     const client = srv.client();
     const res = await client.post('/auth/register', {
       joinCode: cls.code.toLowerCase(),
@@ -241,6 +241,7 @@ describe('register and join preview', () => {
     });
     expect(res.status).toBe(201);
     expect(res.body.user).toMatchObject({ name: 'Lin Learner', username: 'lin.l', role: 'student', email: null, mustChangePassword: false });
+    expect(res.body.joinedClasses).toEqual([{ id: cls.id, name: "Lin's class" }]);
 
     const enrolled = db.prepare('SELECT 1 FROM enrollments WHERE class_id = ? AND user_id = ?').get(cls.id, res.body.user.id);
     expect(enrolled).toBeTruthy();

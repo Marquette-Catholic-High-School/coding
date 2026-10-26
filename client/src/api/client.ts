@@ -136,6 +136,7 @@ export const queryKeys = {
     list: (archived = false) => ['classes', 'list', archived] as const,
     detail: (id: number) => ['classes', 'detail', id] as const,
     roster: (id: number) => ['classes', 'roster', id] as const,
+    invites: (id: number) => ['classes', 'invites', id] as const,
     assignments: (id: number) => ['classes', 'assignments', id] as const,
   },
   assignments: {

@@ -1,9 +1,9 @@
-import { Anchor, Button, PasswordInput, Stack, Text, TextInput } from '@mantine/core';
+import { Alert, Anchor, Button, PasswordInput, Stack, Text, TextInput } from '@mantine/core';
 import { schemaResolver, useForm } from '@mantine/form';
-import { joinClassSchema, registerSchema, type User } from '@codeclass/shared';
-import { IconArrowLeft, IconLayoutDashboard, IconLogout, IconSchool, IconUserPlus } from '@tabler/icons-react';
+import { joinClassSchema, type User } from '@codeclass/shared';
+import { IconArrowLeft, IconLayoutDashboard, IconLogout, IconMail, IconSchool, IconUserPlus } from '@tabler/icons-react';
 import { useState } from 'react';
-import { Link, useNavigate, useParams } from 'react-router';
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router';
 import { useRegister } from '../../api/auth';
 import { useJoinClass } from '../../api/classes';
 import { fieldErrors } from '../../api/client';
@@ -14,57 +14,92 @@ import { ServerUnreachable } from '../../components/ServerUnreachable';
 import { usePageTitle } from '../../hooks/usePageTitle';
 import { AuthCard } from '../../layout/AuthLayout';
 import { ClassCodeField, ClassPreviewCard, normalizeJoinCode, useClassCode } from './ClassCodeField';
-import { withPasswordConfirm } from './formValidation';
+import { EMAIL_REQUIRED_MESSAGE, validateJoinAccount, type JoinAccountValues } from './formValidation';
+import { pathAfterSignUp, signUpNotice } from './joinedClasses';
 
 const codeValidator = schemaResolver(joinClassSchema, { sync: true });
-const accountValidator = withPasswordConfirm(
-  schemaResolver(registerSchema.omit({ joinCode: true }), { sync: true }),
-  'password',
-  'confirmPassword',
-);
 
 function useCodeForm(initialCode: string) {
   return useForm({ mode: 'uncontrolled', initialValues: { joinCode: initialCode }, validate: codeValidator });
 }
 
+/** `/join?email=1` opens the sign-up for students whose teacher added their email address (InvitesCard links to it). */
+function useEmailMode(): boolean {
+  const [params] = useSearchParams();
+  return params.has('email') && params.get('email') !== '0';
+}
+
 /**
  * /join and /join/:code. Not wrapped in an auth guard, so it handles every audience itself:
- * signed out → class code, then create a student account; student → join directly; staff → explanation.
+ * signed out → class code (or the email address a teacher added), then create a student account; student → join
+ * directly; staff → explanation.
  */
 export function JoinPage() {
   usePageTitle('Join a class');
   const { user, isLoading, error, refresh } = useAuth();
   const { code } = useParams();
   const initialCode = normalizeJoinCode(code ?? '').slice(0, 6);
+  // A class code in the link wins over ?email.
+  const emailMode = useEmailMode() && !initialCode;
   // Registering signs the new student in; keep showing the sign-up flow until it navigates away.
   const [registering, setRegistering] = useState(false);
 
   if (isLoading) return <PageLoader label="Loading…" fullPage />;
   if (!user && error) return <ServerUnreachable onRetry={() => void refresh()} />;
-  if (!user || registering) return <RegisterFlow initialCode={initialCode} onRegistering={setRegistering} />;
-  if (user.role === 'student') return <StudentJoin user={user} initialCode={initialCode} />;
+  if (!user || registering) return <RegisterFlow initialCode={initialCode} emailMode={emailMode} onRegistering={setRegistering} />;
+  if (user.role === 'student') return <StudentJoin user={user} initialCode={initialCode} emailMode={emailMode} />;
   return <StaffNotice user={user} initialCode={initialCode} />;
 }
 
-function RegisterFlow({ initialCode, onRegistering }: { initialCode: string; onRegistering: (active: boolean) => void }) {
+const EMPTY_ACCOUNT: JoinAccountValues = { name: '', username: '', email: '', password: '', confirmPassword: '' };
+
+/**
+ * Signed-out sign-up. Two ways in: a class code (an optional school email then also joins any classes that added it),
+ * or "My teacher added my email instead" — no code and a required email, which joins every class that added it.
+ */
+function RegisterFlow({
+  initialCode,
+  emailMode,
+  onRegistering,
+}: {
+  initialCode: string;
+  emailMode: boolean;
+  onRegistering: (active: boolean) => void;
+}) {
   const navigate = useNavigate();
   const register = useRegister();
-  const [step, setStep] = useState<'code' | 'account'>('code');
+  const [step, setStep] = useState<'code' | 'account'>(emailMode ? 'account' : 'code');
+  // Signing up without a class code, with the email address a teacher added.
+  const [byEmail, setByEmail] = useState(emailMode);
   const codeForm = useCodeForm(initialCode);
   const state = useClassCode(codeForm.useWatchValue('joinCode'));
+  const joinCode = byEmail ? null : state.code;
   const accountForm = useForm({
     mode: 'uncontrolled',
-    initialValues: { name: '', username: '', password: '', confirmPassword: '' },
-    validate: accountValidator,
+    initialValues: EMPTY_ACCOUNT,
+    validate: (values) => validateJoinAccount(values, joinCode),
   });
 
-  const loginHref = `/login?next=${encodeURIComponent(state.complete ? `/join/${state.code}` : '/join')}`;
+  const switchToEmail = () => {
+    accountForm.clearErrors();
+    setByEmail(true);
+    setStep('account');
+  };
+  const switchToCode = () => {
+    accountForm.clearErrors();
+    setByEmail(false);
+    setStep('code');
+  };
+
+  // Students who already have an account add the email on their account page instead.
+  const loginNext = byEmail ? '/account' : state.complete ? `/join/${state.code}` : '/join';
   const footer = (
     <>
       Already have an account?{' '}
-      <Anchor component={Link} to={loginHref} fw={600}>
+      <Anchor component={Link} to={`/login?next=${encodeURIComponent(loginNext)}`} fw={600}>
         Sign in
       </Anchor>
+      {byEmail && ' and add your email on your account page.'}
     </>
   );
 
@@ -73,21 +108,26 @@ function RegisterFlow({ initialCode, onRegistering }: { initialCode: string; onR
   });
 
   const submitAccount = accountForm.onSubmit(({ confirmPassword: _confirm, ...values }) => {
-    const className = state.preview.data?.className ?? 'your class';
+    const codeClassName = byEmail ? null : (state.preview.data?.className ?? 'your class');
     onRegistering(true);
     register.mutate(
-      { ...values, joinCode: state.code },
+      { ...values, email: values.email.trim(), joinCode: joinCode ?? undefined },
       {
-        onSuccess: () => {
-          notifySuccess(`Welcome to ${className}!`, 'Your account is ready. Your assignments will show up on your dashboard.');
-          navigate('/dashboard', { replace: true });
+        onSuccess: ({ joinedClasses }) => {
+          const notice = signUpNotice(joinedClasses, codeClassName);
+          notifySuccess(notice.title, notice.message);
+          navigate(pathAfterSignUp(joinedClasses), { replace: true });
         },
         onError: (err) => {
           onRegistering(false);
-          const errors = fieldErrors(err);
-          if (errors.joinCode) {
+          const { joinCode: codeError, ...errors } = fieldErrors(err);
+          if (codeError && byEmail) {
+            // Without a code, the server's "class code or email" error is about the email.
+            accountForm.setErrors({ ...errors, email: errors.email ?? EMAIL_REQUIRED_MESSAGE });
+          } else if (codeError) {
+            accountForm.setErrors(errors);
             setStep('code');
-            codeForm.setFieldError('joinCode', errors.joinCode);
+            codeForm.setFieldError('joinCode', codeError);
             void state.preview.refetch();
           } else if (Object.keys(errors).length > 0) {
             accountForm.setErrors(errors);
@@ -108,31 +148,73 @@ function RegisterFlow({ initialCode, onRegistering }: { initialCode: string; onR
             <Button type="submit" fullWidth size="md" leftSection={<IconUserPlus size={18} />} loading={state.checking}>
               Next: create your account
             </Button>
+            <Text size="sm" ta="center" c="dimmed">
+              No class code?{' '}
+              <Anchor component="button" type="button" size="sm" fw={600} onClick={switchToEmail}>
+                My teacher added my email instead
+              </Anchor>
+            </Text>
           </Stack>
         </form>
       </AuthCard>
     );
   }
 
+  const emailField = (
+    <TextInput
+      label="School email"
+      description={
+        byEmail
+          ? 'Exactly the address your teacher added — usually your school email'
+          : "Optional — if your teacher added your email to other classes, you'll join those too"
+      }
+      placeholder="e.g. sam.patel@school.org"
+      type="email"
+      required={byEmail}
+      autoFocus={byEmail}
+      autoComplete="email"
+      autoCapitalize="none"
+      spellCheck={false}
+      key={accountForm.key('email')}
+      {...accountForm.getInputProps('email')}
+    />
+  );
+
   return (
-    <AuthCard title="Create your account" subtitle="You'll use these details to sign in to CodeClass." footer={footer}>
+    <AuthCard
+      title="Create your account"
+      subtitle={byEmail ? 'Sign up with the email address your teacher added to your class.' : "You'll use these details to sign in to CodeClass."}
+      footer={footer}
+    >
       <Stack gap="md">
-        <ClassPreviewCard
-          state={state}
-          action={
-            <Button variant="subtle" size="xs" leftSection={<IconArrowLeft size={14} />} onClick={() => setStep('code')}>
-              Change
-            </Button>
-          }
-        />
+        {byEmail ? (
+          <Alert variant="light" color="grape" icon={<IconMail size={18} />}>
+            <Stack gap={4} align="flex-start">
+              <Text size="sm">You'll join every class your teacher added this email address to.</Text>
+              <Anchor component="button" type="button" size="sm" fw={600} onClick={switchToCode}>
+                I have a class code instead
+              </Anchor>
+            </Stack>
+          </Alert>
+        ) : (
+          <ClassPreviewCard
+            state={state}
+            action={
+              <Button variant="subtle" size="xs" leftSection={<IconArrowLeft size={14} />} onClick={() => setStep('code')}>
+                Change
+              </Button>
+            }
+          />
+        )}
         <form noValidate onSubmit={submitAccount}>
           <Stack gap="md">
+            {byEmail && emailField}
             <TextInput
               label="Your name"
               description="Your teacher will see this"
               placeholder="e.g. Sam Patel"
               required
-              autoFocus
+              autoFocus={!byEmail}
               autoComplete="name"
               key={accountForm.key('name')}
               {...accountForm.getInputProps('name')}
@@ -148,6 +230,7 @@ function RegisterFlow({ initialCode, onRegistering }: { initialCode: string; onR
               key={accountForm.key('username')}
               {...accountForm.getInputProps('username')}
             />
+            {!byEmail && emailField}
             <PasswordInput
               label="Password"
               description="At least 8 characters"
@@ -164,7 +247,7 @@ function RegisterFlow({ initialCode, onRegistering }: { initialCode: string; onR
               {...accountForm.getInputProps('confirmPassword')}
             />
             <Button type="submit" fullWidth size="md" leftSection={<IconUserPlus size={18} />} loading={register.isPending}>
-              Create account and join
+              {byEmail ? 'Create account' : 'Create account and join'}
             </Button>
           </Stack>
         </form>
@@ -185,7 +268,30 @@ function SignedInAs({ user }: { user: User }) {
   );
 }
 
-function StudentJoin({ user, initialCode }: { user: User; initialCode: string }) {
+/** Signed-in student who opened the "my teacher added my email" link: joining by email happens on the account page. */
+function EmailJoinHint({ user }: { user: User }) {
+  const accountLink = (
+    <Anchor component={Link} to="/account" inherit fw={600}>
+      account page
+    </Anchor>
+  );
+  return (
+    <Alert variant="light" color="grape" icon={<IconMail size={18} />} title="Did your teacher add your email?">
+      <Text size="sm">
+        {user.email ? (
+          <>
+            Classes that add <b>{user.email}</b> show up on your dashboard automatically. If your teacher used a different
+            address, change it on your {accountLink}.
+          </>
+        ) : (
+          <>Add that email address on your {accountLink} and you'll join their classes automatically.</>
+        )}
+      </Text>
+    </Alert>
+  );
+}
+
+function StudentJoin({ user, initialCode, emailMode }: { user: User; initialCode: string; emailMode: boolean }) {
   const navigate = useNavigate();
   const join = useJoinClass();
   const form = useCodeForm(initialCode);
@@ -214,7 +320,8 @@ function StudentJoin({ user, initialCode }: { user: User; initialCode: string })
     <AuthCard title="Join a class" subtitle="Enter the class code your teacher gave you." footer={<SignedInAs user={user} />}>
       <form noValidate onSubmit={handleSubmit}>
         <Stack gap="md">
-          <ClassCodeField key={form.key('joinCode')} inputProps={form.getInputProps('joinCode')} state={state} autoFocus />
+          {emailMode && <EmailJoinHint user={user} />}
+          <ClassCodeField key={form.key('joinCode')} inputProps={form.getInputProps('joinCode')} state={state} autoFocus={!emailMode} />
           <Button
             type="submit"
             fullWidth

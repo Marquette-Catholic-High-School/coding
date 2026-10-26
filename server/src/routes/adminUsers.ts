@@ -14,6 +14,7 @@ import {
 import { currentUser, endOtherSessions, generateTemporaryPassword, hashPassword, requireAdmin } from '../auth';
 import { db, type UserRow } from '../db';
 import { badRequest, conflict, notFound, parseBody, parseId } from '../http';
+import { claimInvites } from '../invites';
 import { toUser } from '../mappers';
 import { emailTaken, usernameTaken } from './auth';
 
@@ -84,7 +85,10 @@ router.post('/admin/users', requireAdmin, (req, res) => {
         'INSERT INTO users (username, email, name, role, password_hash, must_change_password) VALUES (?, ?, ?, ?, ?, 1)',
       )
       .run(input.username, input.email, input.name, input.role, passwordHash);
-    return db.prepare('SELECT * FROM users WHERE id = ?').get(Number(info.lastInsertRowid)) as UserRow;
+    const userId = Number(info.lastInsertRowid);
+    // A new student with an invited email joins those classes (claimInvites skips staff accounts).
+    claimInvites(userId, input.email);
+    return db.prepare('SELECT * FROM users WHERE id = ?').get(userId) as UserRow;
   })();
 
   res.status(201).json({ user: toUser(row), temporaryPassword } satisfies TemporaryPasswordResponse);
@@ -122,12 +126,12 @@ router.patch('/admin/users/:id', requireAdmin, (req, res) => {
     if (input.email && emailTaken(input.email, target.id)) {
       throw conflict('That email is already used by another account', { email: 'Another account already uses this email' });
     }
-    db.prepare('UPDATE users SET name = ?, email = ?, role = ? WHERE id = ?').run(
-      input.name ?? target.name,
-      input.email === undefined ? target.email : input.email,
-      newRole,
-      target.id,
-    );
+    const email = input.email === undefined ? target.email : input.email;
+    db.prepare('UPDATE users SET name = ?, email = ?, role = ? WHERE id = ?').run(input.name ?? target.name, email, newRole, target.id);
+    // A student who gets an invited email (or an account with one that becomes a student) joins those classes.
+    if (email !== null && (email.toLowerCase() !== target.email?.toLowerCase() || newRole !== target.role)) {
+      claimInvites(target.id, email);
+    }
     return db.prepare('SELECT * FROM users WHERE id = ?').get(target.id) as UserRow;
   })();
 

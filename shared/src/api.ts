@@ -10,8 +10,11 @@ import { pseudocodeConfigSchema } from './pseudocode/schema';
 import type {
   Assignment,
   AssignmentListItem,
+  ClassInvite,
   ClassSummary,
   Dashboard,
+  InviteImportRow,
+  InviteOutcome,
   Language,
   Project,
   RosterStudent,
@@ -81,13 +84,22 @@ export const loginSchema = z.object({
 });
 export type LoginInput = z.input<typeof loginSchema>;
 
-/** POST /api/auth/register — student self-registration with a class join code; enrolls and signs in. */
-export const registerSchema = z.object({
-  joinCode: joinCodeSchema,
-  name: personNameSchema,
-  username: usernameSchema,
-  password: passwordSchema,
-});
+/**
+ * POST /api/auth/register — student self-registration. Needs a class code, or an email address a teacher invited
+ * (then the student joins every class that invited it; with both, they join all of them).
+ */
+export const registerSchema = z
+  .object({
+    joinCode: joinCodeSchema.optional(),
+    email: optionalEmailSchema,
+    name: personNameSchema,
+    username: usernameSchema,
+    password: passwordSchema,
+  })
+  .refine((v) => v.joinCode || v.email, {
+    message: 'Enter your class code, or the email address your teacher added',
+    path: ['joinCode'],
+  });
 export type RegisterInput = z.input<typeof registerSchema>;
 
 /** POST /api/auth/change-password */
@@ -105,7 +117,11 @@ export const updateProfileSchema = z.object({
 export type UpdateProfileInput = z.input<typeof updateProfileSchema>;
 
 /** GET /api/auth/me (401 when signed out), POST /api/setup, /login, /register, PATCH /profile */
-export interface UserResponse { user: User }
+export interface UserResponse {
+  user: User;
+  /** Register / profile update: classes just joined through email invitations or the class code. */
+  joinedClasses?: { id: number; name: string }[];
+}
 
 /** GET /api/join/:code — public preview for the join page. 404 when the code is unknown. */
 export interface JoinPreviewResponse { className: string; teacherName: string; joinEnabled: boolean }
@@ -227,6 +243,31 @@ export type AddStudentInput = z.input<typeof addStudentSchema>;
 export interface AddStudentResponse { student: RosterStudent; temporaryPassword: string | null }
 
 // DELETE /api/classes/:id/students/:userId → OkResponse (removes enrollment only)
+
+/** GET /api/classes/:id/invites (staff) — pending first, then joined; newest first within each. */
+export interface InvitesResponse { invites: ClassInvite[] }
+
+export const inviteEntrySchema = z.object({
+  email: z.string().trim().max(254),
+  name: z.string().trim().max(80).default(''),
+});
+
+/**
+ * POST /api/classes/:id/invites (staff) — add students by email (e.g. from a spreadsheet). Existing student accounts
+ * with a matching email are enrolled now; other emails become pending invitations that are claimed when a student
+ * signs up with (or changes their account to) that email. dryRun reports each row's outcome without changing anything.
+ */
+export const importInvitesSchema = z.object({
+  entries: z.array(inviteEntrySchema).min(1, 'The list is empty').max(1000, 'At most 1,000 students at a time'),
+  dryRun: z.boolean().default(false),
+});
+export type ImportInvitesInput = z.input<typeof importInvitesSchema>;
+export interface InviteImportResponse {
+  rows: InviteImportRow[];
+  counts: Record<InviteOutcome, number>;
+}
+
+// DELETE /api/classes/:id/invites/:inviteId → OkResponse (a joined invite only loses its record; the student stays)
 // POST /api/classes/:id/students/:userId/reset-password → TemporaryPasswordResponse (students only)
 
 // ---------------------------------------------------------------------------
@@ -277,6 +318,28 @@ export interface AssignmentResponse {
 }
 
 // DELETE /api/assignments/:id → OkResponse
+
+/**
+ * POST /api/classes/:id/assignments/copy (staff) — copies assignments from any classes the caller manages (archived
+ * ones included) into class :id, keeping order. Copies keep instructions, language, starter code, tests, points,
+ * compare mode, late-work setting and the solution. Due dates are dropped unless keepDueDates (and a solution shown
+ * "after the due date" then becomes "teachers only", reported in notes). Copies are drafts unless publish. A language
+ * the class doesn't use yet is added to it when it is still installed and enabled; otherwise the assignment is
+ * skipped. Copying within the same class appends " (copy)" to the title.
+ */
+export const copyAssignmentsSchema = z.object({
+  assignmentIds: z.array(z.number().int().positive()).min(1, 'Pick at least one assignment').max(100),
+  keepDueDates: z.boolean().default(false),
+  publish: z.boolean().default(false),
+});
+export type CopyAssignmentsInput = z.input<typeof copyAssignmentsSchema>;
+export interface CopyAssignmentsResponse {
+  copied: { sourceId: number; id: number; title: string }[];
+  /** Languages added to the class so the copies can use them. */
+  addedLanguageIds: string[];
+  skipped: { sourceId: number; title: string; reason: string }[];
+  notes: string[];
+}
 
 // ---------------------------------------------------------------------------
 // Submissions

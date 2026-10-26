@@ -271,3 +271,43 @@ export interface StudentDashboard {
 }
 
 export type Dashboard = TeacherDashboard | StudentDashboard;
+
+// ---------------------------------------------------------------------------
+// Class invitations (students added by email, e.g. from a spreadsheet)
+// ---------------------------------------------------------------------------
+
+export type InviteStatus = 'pending' | 'joined';
+
+/** An email address a teacher added to a class. The student joins the class when an account with that email exists. */
+export interface ClassInvite {
+  id: number;
+  /** Lowercased. */
+  email: string;
+  /** Name from the spreadsheet ('' when there was none). */
+  name: string;
+  status: InviteStatus;
+  invitedAt: string;
+  invitedByName: string | null;
+  joinedAt: string | null;
+  /** The account that used this email (joined invites only). */
+  joinedUser: { id: number; name: string; username: string } | null;
+}
+
+/**
+ * What importing one spreadsheet row does (or would do, for a dry run):
+ * - `enrolled`: a student account with this email exists and is (or will be) added to the class now;
+ * - `invited`: no account yet; the student joins when they sign up with this email;
+ * - `already_enrolled` / `already_invited`: nothing to do;
+ * - `not_a_student`: the email belongs to a teacher or admin account;
+ * - `invalid`: not an email address; `duplicate`: the same email appears earlier in the list.
+ */
+export type InviteOutcome = 'enrolled' | 'invited' | 'already_enrolled' | 'already_invited' | 'not_a_student' | 'invalid' | 'duplicate';
+
+export interface InviteImportRow {
+  /** As given (trimmed; lowercased when valid). */
+  email: string;
+  name: string;
+  outcome: InviteOutcome;
+  /** The existing student account for `enrolled` / `already_enrolled`. */
+  student: { id: number; name: string; username: string } | null;
+}
