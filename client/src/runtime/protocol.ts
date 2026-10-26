@@ -49,6 +49,8 @@ export type WorkerToMain =
       id: number;
       status: 'ok' | 'error';
       error: RunError | null;
+      /** The program asked for a line of input (see `RunOutcome.readInput`). */
+      readInput: boolean;
       /**
        * Do not reuse this worker: the runtime may be in a bad state (crash, out of memory), or the program could
        * have changed it for the next one (JavaScript and TypeScript share one realm with the worker).

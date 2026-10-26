@@ -80,6 +80,8 @@ export interface ReplayState {
   seed: number;
   /** Characters of output already shown by earlier attempts. */
   shown: number;
+  /** The program asked for a line of input in some attempt (set by `runReplayAttempt`). */
+  readInput?: boolean;
 }
 
 export interface ReplayOutput {
@@ -116,6 +118,7 @@ export function runReplayAttempt(state: ReplayState, out: ReplayOutput): LangRes
       {
         write: emit,
         readLine: () => {
+          state.readInput = true;
           const given = stdin.shift();
           if (given !== undefined) {
             emit('stdin', `${given}\n`);

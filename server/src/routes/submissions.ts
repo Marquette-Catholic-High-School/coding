@@ -43,6 +43,16 @@ function loadForStudent(req: Request): { user: User; assignment: AssignmentRow }
   return { user, assignment };
 }
 
+/**
+ * The `updated_at` for a write to a row last written at `previous`: now, but always later than `previous`, so every
+ * write changes it. The teacher's PATCH relies on that to notice work that changed since it was looked at.
+ */
+function nextUpdatedAt(previous: string): string {
+  const now = Date.now();
+  const last = Date.parse(previous);
+  return new Date(Number.isNaN(last) || now > last ? now : last + 1).toISOString();
+}
+
 /** Keeps only results for the given tests (one per test id, first wins). */
 function resultsFor(testIds: Set<string>, results: TestResult[]): TestResult[] {
   const seen = new Set<string>();
@@ -80,7 +90,7 @@ router.put('/assignments/:id/submission', requireAuth, (req, res) => {
     throw conflict("The due date has passed and this assignment doesn't accept late work.");
   }
   if (existing) {
-    db.prepare('UPDATE submissions SET code = ?, updated_at = ? WHERE id = ?').run(code, nowIso(), existing.id);
+    db.prepare('UPDATE submissions SET code = ?, updated_at = ? WHERE id = ?').run(code, nextUpdatedAt(existing.updated_at), existing.id);
   } else {
     db.prepare("INSERT INTO submissions (assignment_id, student_id, code, status) VALUES (?, ?, ?, 'in_progress')").run(
       assignment.id,
@@ -113,7 +123,7 @@ router.post('/assignments/:id/submit', requireAuth, (req, res) => {
     db.prepare(
       `UPDATE submissions SET code = ?, status = 'submitted', submitted_at = ?, test_results = ?, auto_score = ?, updated_at = ?
        WHERE id = ?`,
-    ).run(input.code, now, testResults, autoScore, now, existing.id);
+    ).run(input.code, now, testResults, autoScore, nextUpdatedAt(existing.updated_at), existing.id);
   } else {
     db.prepare(
       `INSERT INTO submissions (assignment_id, student_id, code, status, submitted_at, test_results, auto_score)
@@ -134,7 +144,7 @@ router.post('/assignments/:id/unsubmit', requireAuth, (req, res) => {
     throw conflict("You've seen your teacher's solution, so this work can't be unsubmitted. Ask your teacher if you need to change it.");
   }
   db.prepare("UPDATE submissions SET status = 'in_progress', submitted_at = NULL, updated_at = ? WHERE id = ?").run(
-    nowIso(),
+    nextUpdatedAt(existing.updated_at),
     existing.id,
   );
   res.json(respondToStudent(assignment, user.id));
@@ -201,6 +211,10 @@ router.patch('/assignments/:id/submissions/:studentId', requireStaff, (req, res)
 
   db.transaction(() => {
     let row = findSubmission(assignment.id, student.id);
+    // The work changed since the teacher (or autograde) looked at it, e.g. the student unsubmitted: save nothing.
+    if (input.expectedUpdatedAt !== undefined && (row?.updated_at ?? null) !== input.expectedUpdatedAt) {
+      throw conflict(`${student.name}'s work changed while you were grading it. Reload to see the latest version.`);
+    }
     if (!row) {
       db.prepare("INSERT INTO submissions (assignment_id, student_id, code, status) VALUES (?, ?, ?, 'in_progress')").run(
         assignment.id,
@@ -214,6 +228,8 @@ router.patch('/assignments/:id/submissions/:studentId', requireStaff, (req, res)
     const next = { ...row };
     if (input.feedback !== undefined) next.feedback = input.feedback;
     if (input.grade !== undefined) next.grade = input.grade;
+    // A new grade is a hand grade unless autograde says it set it.
+    if (input.grade != null) next.auto_graded = input.autoGraded === true ? 1 : 0;
     if (input.testResults !== undefined) {
       const tests = parseTests(assignment);
       const results = input.testResults ? resultsFor(new Set(tests.map((t) => t.id)), input.testResults) : null;
@@ -240,7 +256,9 @@ router.patch('/assignments/:id/submissions/:studentId', requireStaff, (req, res)
     } else if (status === 'submitted') {
       next.status = 'submitted';
       next.submitted_at = row.submitted_at ?? now;
-      next.returned_at = null;
+      // Undoing a return for revision forgets the return. Taking the grade off handed-in work (autograde can no
+      // longer score work it graded before) keeps it, so work handed in again after a return still isn't late.
+      if (row.status === 'in_progress') next.returned_at = null;
       next.grade = null;
       next.graded_at = null;
       next.graded_by = null;
@@ -249,21 +267,24 @@ router.patch('/assignments/:id/submissions/:studentId', requireStaff, (req, res)
       const msg = 'Enter a grade';
       throw badRequest(msg, { grade: msg });
     }
+    // No grade (returned for revision, set back to submitted, or never graded): nothing was autograded.
+    if (next.grade == null) next.auto_graded = 0;
 
     db.prepare(
-      `UPDATE submissions SET status = ?, submitted_at = ?, test_results = ?, auto_score = ?, grade = ?, feedback = ?,
-         graded_at = ?, graded_by = ?, returned_at = ?, updated_at = ? WHERE id = ?`,
+      `UPDATE submissions SET status = ?, submitted_at = ?, test_results = ?, auto_score = ?, grade = ?, auto_graded = ?,
+         feedback = ?, graded_at = ?, graded_by = ?, returned_at = ?, updated_at = ? WHERE id = ?`,
     ).run(
       next.status,
       next.submitted_at,
       next.test_results,
       next.auto_score,
       next.grade,
+      next.auto_graded,
       next.feedback,
       next.graded_at,
       next.graded_by,
       next.returned_at,
-      now,
+      nextUpdatedAt(row.updated_at),
       row.id,
     );
   })();

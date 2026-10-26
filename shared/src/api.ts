@@ -396,6 +396,13 @@ export const gradeSubmissionSchema = z.object({
   status: z.enum(['graded', 'in_progress', 'submitted']).optional(),
   testResults: z.array(testResultSchema).max(50).nullable().optional(),
   autoScore: z.number().min(0).max(100).nullable().optional(),
+  /** With a non-null grade: autograde set it, not the teacher (default false). Ignored without a grade. */
+  autoGraded: z.boolean().optional(),
+  /**
+   * The submission's `updatedAt` when the teacher (or autograde) looked at it; null = not started yet. If the work has
+   * changed since — the student unsubmitted, handed in again or kept typing — the PATCH is refused with 409.
+   */
+  expectedUpdatedAt: z.string().max(40).nullable().optional(),
 });
 export type GradeSubmissionInput = z.input<typeof gradeSubmissionSchema>;
 

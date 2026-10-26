@@ -42,6 +42,18 @@ export interface RunOutcome {
   /** Everything written to stdout (used by tests). */
   stdout: string;
   durationMs: number;
+  /**
+   * The program started running. False when it never got that far: the code runner failed first (the language
+   * runtime couldn't load, or the worker couldn't start or crashed while loading — see `runnerFailed`), or the run
+   * was stopped while the runtime was still loading. Such an outcome says nothing about the program.
+   */
+  started: boolean;
+  /**
+   * The program asked for a line of input, whether or not there was one to give it. Some languages don't fail when
+   * input runs out (JavaScript's prompt() returns null, Lua's io.read() returns nil), so a run without input can
+   * finish 'ok' with output that depends on the input it didn't get.
+   */
+  readInput: boolean;
 }
 
 export interface RunOptions {
@@ -98,4 +110,9 @@ export interface RunTestsOptions {
    * from a clean state on every run.
    */
   freshWorker?: boolean;
+  /**
+   * Called when a test couldn't run because the code runner itself failed (see `runnerFailed`): its failed result
+   * says nothing about the code. Autograde uses it to leave that work as it is instead of scoring it 0.
+   */
+  onRunnerError?: (message: string) => void;
 }

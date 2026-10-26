@@ -166,6 +166,8 @@ export interface Submission {
   autoScore: number | null;
   /** Points awarded by the teacher (0..assignment.points) or null if not graded. */
   grade: number | null;
+  /** The grade was set by autograde and hasn't been changed by hand since (false when there is no grade). */
+  autoGraded: boolean;
   feedback: string | null;
   gradedAt: string | null;
   /**

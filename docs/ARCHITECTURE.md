@@ -131,7 +131,10 @@ Contract in `runtime/types.ts` + `runtime/index.ts` + `runtime/useCodeRunner.ts`
   line numbers mapped to the student's source.
 - `runTests`: for each test, non-interactive run with `inputLines(test.input)` as stdin, compare stdout with
   `outputsMatch(actual, expected, compareMode)`; passed = status ok && match; timeouts say "Took too long — is
-  there a loop that never ends?".
+  there a loop that never ends?". `RunOutcome.started` (the worker reached the running phase) and `readInput` (the
+  program asked for a line, even where running out isn't an error: JavaScript's prompt(), Lua's io.read()) let
+  callers tell the program's results from the code runner's: `runnerFailed(outcome)` = errored before it started
+  (runtime couldn't load, worker crashed); `onRunnerError` reports such tests.
 
 ## 6. Pseudocode engine (shared/src/pseudocode)
 
@@ -338,8 +341,13 @@ CALL, MOD/DIV, LENGTH, `&` concatenation),
   `GET …/submissions/:studentId` (enrolled students only; prev/next in name order), `PATCH …/submissions/:studentId`
   (creates the row from starter code if needed; a non-null `grade` without `status` ⇒ graded with `graded_at`,
   `graded_by`; `status: 'in_progress'` returns work for revision keeping feedback and `submitted_at`, and sets
-  `returned_at`/`returnedAt` when the work was submitted or graded; `status: 'submitted'` clears it; a PATCH with only
-  `testResults/autoScore` leaves status unchanged). Returned work can be submitted after the due date even with
+  `returned_at`/`returnedAt` when the work was submitted or graded; `status: 'submitted'` clears it when undoing a
+  return (from in progress) and keeps it when taking a grade off; a PATCH with only `testResults/autoScore` leaves
+  status unchanged). `autoGraded` with a non-null grade marks it set by autograde (`submissions.auto_graded`, added by
+  `migrate()`; any other grade is a hand grade, and no grade ⇒ false). `expectedUpdatedAt` (null = no row yet) must
+  equal the row's `updated_at` or the PATCH is refused with 409 and nothing is written, so grading never lands on
+  work that changed since it was looked at (unsubmitted, handed in again). Every write to a submission moves
+  `updated_at` forward by at least 1 ms (`nextUpdatedAt`) so that check can't miss a change. Returned work can be submitted after the due date even with
   `allowLate` false, and `isLate` is false while `returned_at` is set (also after it is handed in again and graded).
   `db.ts` `migrate()` adds `returned_at` to older databases (marking in-progress rows with feedback as returned).
 - UI: `AssignmentEditorPage` (new + edit: details card with Markdown instructions write/preview, language from class
@@ -355,11 +363,31 @@ CALL, MOD/DIV, LENGTH, `&` concatenation),
   note, as a student who hasn't started would see it now (`solutionView.ts`); sticky save bar; `useBlocker` for
   unsaved changes; `editorForm.ts` maps form ⇄ API, solution fields included), `AssignmentOverviewPage` (teacher view
   of `/assignments/:id`: header with language/draft/due badges and `SolutionBadge` (who can see it, description in a
-  tooltip) when there is a solution, Edit + Preview + "Autograde all" (runs every test incl. hidden for each
-  submitted/graded submission in the teacher's browser and PATCHes `testResults/autoScore`), stat tiles, instructions
-  accordion, students table filterable All / To grade / Missing), `GradingPage` (read-only `CodeWorkspace` with all
-  tests incl. hidden and the solution; side card with status, late, auto score, "Use auto-score", grade `NumberInput`
-  out of points, feedback, Save grade, Return for revision, prev/next student).
+  tooltip) when there is a solution, Edit + Preview + "Autograde", stat tiles, instructions accordion, students table
+  filterable All / To grade / Missing with a "Matches solution" badge on handed-in work whose code `matchesSolution`
+  and an inline `GradeCell` per row), `GradingPage` (read-only `CodeWorkspace` with all tests incl. hidden and the
+  solution; side card with status, late, code matches solution, auto score (`autoScoreView.ts`), "Use auto-score"
+  (`gradeFromAutoScore`), grade `NumberInput` out of points (says when autograde set it; saving makes it a hand
+  grade), feedback, Save grade, Return for revision, prev/next student).
+- Autograde (`autograde.ts` pure logic, `useAutograde.tsx` runs it, `AutogradeModal.tsx`): offered when the kind
+  supports tests and there are tests, or there is a solution (`autogradeMethod`). The modal explains the rules for
+  this assignment and picks the work — waiting to be graded / all handed-in work (default; regrades autograde's own
+  grades, keeps hand grades) / all handed-in work replacing every grade — and "Set grades from the scores" (off =
+  only refresh results and auto scores). One submission at a time in this browser (fresh worker, abortable, one
+  updating notification). Score: code that `matchesSolution` ⇒ 100 (tests still run and are stored); else the
+  weighted share of every test incl. hidden; with no tests the solution runs once without input and work that
+  finishes `ok` printing the same (`outputsMatch`, compare mode) without reading input ⇒ 100, anything else no score
+  — unless the solution itself can't give a reference (needs input, errors, prints nothing), when only exact matches
+  score. A grade = `gradeFromAutoScore`, saved with `status: 'graded', autoGraded: true` only for work the scope may
+  (re)grade; a regrade that can no longer score autograde's own grade sets it back to submitted; a runner failure
+  leaves the work untouched. Every PATCH sends `expectedUpdatedAt`; a 409 counts as "changed while autograding".
+  The summary counts graded / left for you / hand grades kept / grades taken off / changed / couldn't check / failed.
+- `GradeCell`: `NumberInput` (0..points, 1 decimal, strict clamp, no arrow-key stepping) + "/ points" + an "Auto"
+  badge for autograded grades. Saves on blur or Enter when changed (Enter / ↑ / ↓ move between rows), Escape or an
+  empty box restores the saved grade; PATCH `{ grade, status: 'graded', expectedUpdatedAt }` with the `updatedAt`
+  seen when editing began (409 ⇒ warning + refetch). Work that wasn't handed in can be graded too (e.g. 0 for missing
+  work; the input's description says it stops the student editing). Rows edited on a filtered tab stay listed until
+  the tab changes (`inlineGrade.ts`).
 
 ### 7.4 Student experience & playground
 - `StudentDashboard` (StatCards, "To do" list, recently graded, join-class modal; first-run empty state asking for a

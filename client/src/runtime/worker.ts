@@ -76,9 +76,9 @@ async function getRunner(kind: LanguageKind, onLoading: () => void): Promise<Lan
 /** Pseudocode run waiting for typed input in 'replay' mode. */
 let pendingReplay: { id: number; state: ReplayState; out: OutputBuffer; attempt: () => void } | null = null;
 
-function finish(id: number, out: OutputBuffer, result: LangResult): void {
+function finish(id: number, out: OutputBuffer, result: LangResult, readInput: boolean): void {
   out.flush();
-  post({ type: 'done', id, status: result.status, error: result.error, recycle: result.recycle === true });
+  post({ type: 'done', id, status: result.status, error: result.error, readInput, recycle: result.recycle === true });
 }
 
 async function handleRun(request: RunRequest): Promise<void> {
@@ -92,9 +92,11 @@ async function handleRun(request: RunRequest): Promise<void> {
   const channel = request.inputMode === 'channel' ? request.channel : null;
   // Once the user ends the input, every later read gets end-of-file too (as with a closed pipe).
   let inputEnded = false;
+  let readInput = false;
   const io: RunIO = {
     write: (stream, text) => out.write(stream, text),
     readLine: () => {
+      readInput = true;
       const given = stdin.shift();
       if (given !== undefined) {
         out.echoInput(given);
@@ -126,7 +128,7 @@ async function handleRun(request: RunRequest): Promise<void> {
     runner = await getRunner(request.kind, onLoading);
     await runner.prepare?.(request.code, onLoading);
   } catch (err) {
-    finish(id, out, failure({ message: describeError(err) }));
+    finish(id, out, failure({ message: describeError(err) }), false);
     return;
   }
 
@@ -147,7 +149,7 @@ async function handleRun(request: RunRequest): Promise<void> {
       const result = runReplayAttempt(state, { write: (stream, text) => out.write(stream, text) });
       if (result) {
         pendingReplay = null;
-        finish(id, out, result);
+        finish(id, out, result, state.readInput === true);
         return;
       }
       out.flush();
@@ -164,7 +166,7 @@ async function handleRun(request: RunRequest): Promise<void> {
   } catch (err) {
     result = failure({ message: `The ${LANGUAGE_NAMES[request.kind]} runner stopped unexpectedly: ${describeError(err)}` }, true);
   }
-  finish(id, out, result);
+  finish(id, out, result, readInput);
 }
 
 scope.addEventListener('message', (event) => {

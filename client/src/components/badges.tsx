@@ -18,12 +18,14 @@ import {
   IconCircleOff,
   IconClockExclamation,
   IconCopy,
+  IconCopyCheck,
   IconEyeOff,
   IconKey,
   IconLock,
   IconMail,
   IconMailForward,
   IconMailOff,
+  IconRobot,
   IconUserCheck,
   IconUserOff,
 } from '@tabler/icons-react';
@@ -109,6 +111,28 @@ export function SolutionBadge({ visibility }: { visibility: SolutionVisibility }
         {...BADGE_NO_SHRINK}
       >
         Solution: {label}
+      </Badge>
+    </Tooltip>
+  );
+}
+
+/** Teacher views: the student's code is the teacher's solution (`matchesSolution`). */
+export function SolutionMatchBadge({ size = 'sm' }: { size?: BadgeProps['size'] }) {
+  return (
+    <Tooltip label="Same code as your solution, ignoring blank lines and spaces at line ends" multiline maw={300}>
+      <Badge variant="light" size={size} color="teal" leftSection={<IconCopyCheck size={12} />} {...BADGE_NO_SHRINK}>
+        Matches solution
+      </Badge>
+    </Tooltip>
+  );
+}
+
+/** Next to a grade that autograde set and the teacher hasn't changed (`Submission.autoGraded`). */
+export function AutoGradedBadge() {
+  return (
+    <Tooltip label="Set by autograde. Change it to grade it yourself.">
+      <Badge variant="light" size="xs" color="brand" leftSection={<IconRobot size={12} />} {...BADGE_NO_SHRINK}>
+        Auto
       </Badge>
     </Tooltip>
   );

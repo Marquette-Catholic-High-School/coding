@@ -16,6 +16,8 @@ import {
   type WorkerToMain,
 } from './protocol';
 import { runTestsWith } from './testRunner';
+
+export { runnerFailed } from './testRunner';
 import type { OutputChunk, RunError, RunHandle, RunOptions, RunOutcome, RunOutcomeStatus, RunTarget, RunTestsOptions } from './types';
 
 export type * from './types';
@@ -184,7 +186,7 @@ function describe(err: unknown): string {
 
 function settledHandle(error: RunError): RunHandle {
   return {
-    done: Promise.resolve({ status: 'error', error, stdout: '', durationMs: 0 }),
+    done: Promise.resolve({ status: 'error', error, stdout: '', durationMs: 0, started: false, readInput: false }),
     stop() {},
     provideInput() {},
     endInput() {},
@@ -199,6 +201,10 @@ class RunSession {
   private slot: WorkerSlot | null = null;
   private resolve!: (outcome: RunOutcome) => void;
   private settled = false;
+  /** The worker said the program is running (its runtime loaded). */
+  private started = false;
+  /** The program asked for a line of input. */
+  private readInput = false;
   private stdout = '';
   /** Reads the worker's output tail (output it could not send yet); null without cross-origin isolation. */
   private tail: OutputTailReader | null = null;
@@ -277,13 +283,17 @@ class RunSession {
     if (message.id !== this.id || this.settled) return;
     switch (message.type) {
       case 'phase':
-        if (message.phase === 'running') this.resumeClock();
+        if (message.phase === 'running') {
+          this.started = true;
+          this.resumeClock();
+        }
         call(this.options.onPhase, message.phase);
         break;
       case 'output':
         this.emit(this.tail ? this.tail.receive(message.batch, message.chunks) : message.chunks);
         break;
       case 'input-request': {
+        this.readInput = true;
         this.pauseClock();
         if (this.queuedInput.length > 0) {
           this.deliver(this.queuedInput.shift()!);
@@ -299,6 +309,7 @@ class RunSession {
         break;
       }
       case 'done': {
+        if (message.readInput) this.readInput = true;
         const slot = this.slot;
         this.slot = null;
         if (slot) {
@@ -404,7 +415,14 @@ class RunSession {
       if (slot.channel) writeInputEof(slot.channel);
       discard(slot);
     }
-    this.resolve({ status, error, stdout: this.stdout, durationMs: Math.round(this.elapsedMs) });
+    this.resolve({
+      status,
+      error,
+      stdout: this.stdout,
+      durationMs: Math.round(this.elapsedMs),
+      started: this.started,
+      readInput: this.readInput,
+    });
   }
 }
 
@@ -431,7 +449,13 @@ export async function runTests(target: RunTarget, code: string, tests: TestCase[
   try {
     return await runTestsWith((t, c, o) => startRunIn(pool, t, c, o ?? {}), target, code, tests, options);
   } catch {
-    return tests.map((t) => ({ testId: t.id, passed: false, actualOutput: '', error: "Couldn't run the tests.", durationMs: 0 }));
+    const error = "Couldn't run the tests.";
+    try {
+      options.onRunnerError?.(error);
+    } catch {
+      // A failing callback must not hide the results.
+    }
+    return tests.map((t) => ({ testId: t.id, passed: false, actualOutput: '', error, durationMs: 0 }));
   } finally {
     own?.close();
   }

@@ -1,11 +1,4 @@
-import {
-  computeAutoScore,
-  kindSupportsTests,
-  type Assignment,
-  type AssignmentResponse,
-  type Language,
-  type SubmissionRow,
-} from '@codeclass/shared';
+import { matchesSolution, type Assignment, type AssignmentResponse, type SubmissionRow } from '@codeclass/shared';
 import {
   Accordion,
   ActionIcon,
@@ -25,9 +18,7 @@ import {
   VisuallyHidden,
 } from '@mantine/core';
 import { modals } from '@mantine/modals';
-import { notifications } from '@mantine/notifications';
 import {
-  IconAlertTriangle,
   IconChartBar,
   IconCheck,
   IconChecklist,
@@ -45,10 +36,20 @@ import {
   IconUserPlus,
   IconUsers,
 } from '@tabler/icons-react';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router';
-import { useAssignment, useDeleteAssignment, useGradeSubmission, useSubmissionRows } from '../../api/assignments';
-import { DraftBadge, DueBadge, LanguageBadge, LateBadge, ScoreText, SolutionBadge, SubmissionStatusBadge, TabCountBadge } from '../../components/badges';
+import { useAssignment, useDeleteAssignment, useSubmissionRows } from '../../api/assignments';
+import {
+  DraftBadge,
+  DueBadge,
+  LanguageBadge,
+  LateBadge,
+  ScoreText,
+  SolutionBadge,
+  SolutionMatchBadge,
+  SubmissionStatusBadge,
+  TabCountBadge,
+} from '../../components/badges';
 import classes from '../../components/cards.module.css';
 import { Markdown } from '../../components/Markdown';
 import { notifyError, notifySuccess } from '../../components/notify';
@@ -57,8 +58,12 @@ import { PageLoader, QueryState } from '../../components/QueryState';
 import { RelativeTime } from '../../components/RelativeTime';
 import { StatCard } from '../../components/StatCard';
 import { usePageTitle } from '../../hooks/usePageTitle';
-import { runTests } from '../../runtime';
+import { autogradeMethod } from './autograde';
+import { AutogradeModal } from './AutogradeModal';
+import { GradeCell } from './GradeCell';
+import { gradeCellTarget, noPinnedRows, pinnedOn, pinRow, type PinnedRows } from './inlineGrade';
 import { PreviewModal } from './PreviewModal';
+import { useAutograde } from './useAutograde';
 
 type Filter = 'all' | 'to-grade' | 'missing';
 
@@ -68,11 +73,11 @@ function parseFilter(value: string | null): Filter {
 
 const handedIn = (row: SubmissionRow) => row.submission.status === 'submitted' || row.submission.status === 'graded';
 
-export function formatGrade(grade: number): string {
-  return String(Math.round(grade * 10) / 10);
+function matchesFilter(row: SubmissionRow, filter: Filter): boolean {
+  return filter === 'to-grade' ? row.submission.status === 'submitted' : filter === 'missing' ? !handedIn(row) : true;
 }
 
-/** Teacher view of /assignments/:id — submissions, stats and bulk autograding. */
+/** Teacher view of /assignments/:id — submissions with inline grades, stats and autograding. */
 export function AssignmentOverviewPage({ assignmentId }: { assignmentId: number }) {
   const query = useAssignment(assignmentId);
   usePageTitle(query.data?.assignment.title ?? 'Assignment');
@@ -99,7 +104,14 @@ function Overview({ data }: { data: AssignmentResponse }) {
   const [searchParams, setSearchParams] = useSearchParams();
   const filter = parseFilter(searchParams.get('tab'));
   const [previewOpen, setPreviewOpen] = useState(false);
-  const autograde = useAutogradeAll(assignment, language);
+  const [autogradeOpen, setAutogradeOpen] = useState(false);
+  const method = autogradeMethod(language.kind, assignment);
+  const autograde = useAutograde(assignment, language, method);
+  // Rows graded inline on this tab stay listed until the tab changes, so they don't jump away while grading down the list.
+  const [pinned, setPinned] = useState<PinnedRows<Filter>>(() => noPinnedRows(filter));
+  // Any change of tab (a click, or Back/Forward) forgets the rows pinned on the old one, even when coming back to it.
+  const pinnedHere = pinnedOn(pinned, filter);
+  if (pinnedHere !== pinned) setPinned(pinnedHere);
   const deleteAssignment = useDeleteAssignment();
 
   const stats = useMemo(() => {
@@ -119,10 +131,8 @@ function Overview({ data }: { data: AssignmentResponse }) {
     };
   }, [rows, assignment.points]);
 
-  const visibleRows = rows.filter((r) =>
-    filter === 'to-grade' ? r.submission.status === 'submitted' : filter === 'missing' ? !handedIn(r) : true,
-  );
-  const canAutograde = kindSupportsTests(language.kind) && assignment.tests.length > 0;
+  const visibleRows = rows.filter((r) => matchesFilter(r, filter) || pinnedHere.ids.has(r.student.id));
+  const keepRow = (studentId: number) => setPinned((prev) => pinRow(prev, filter, studentId));
 
   const setFilter = (value: string | null) =>
     setSearchParams(
@@ -188,15 +198,26 @@ function Overview({ data }: { data: AssignmentResponse }) {
             <Button variant="default" leftSection={<IconEye size={18} />} onClick={() => setPreviewOpen(true)}>
               Preview
             </Button>
-            {canAutograde &&
+            {method &&
               (autograde.running ? (
                 <Button color="red" variant="light" leftSection={<IconPlayerStop size={18} />} onClick={autograde.stop}>
                   Stop autograding
                 </Button>
               ) : (
-                <Tooltip label="Runs every test, including hidden ones, on each handed-in submission in your browser." multiline maw={280}>
-                  <Button leftSection={<IconRobot size={18} />} onClick={() => void autograde.start(rows)} disabled={stats.handedIn === 0}>
-                    Autograde all
+                <Tooltip label="Nothing has been handed in yet." disabled={stats.handedIn > 0}>
+                  <Button
+                    leftSection={<IconRobot size={18} />}
+                    data-disabled={stats.handedIn === 0 || undefined}
+                    aria-disabled={stats.handedIn === 0}
+                    onClick={(e) => {
+                      if (stats.handedIn === 0) {
+                        e.preventDefault();
+                        return;
+                      }
+                      setAutogradeOpen(true);
+                    }}
+                  >
+                    Autograde
                   </Button>
                 </Tooltip>
               ))}
@@ -314,7 +335,7 @@ function Overview({ data }: { data: AssignmentResponse }) {
                 </div>
               </Group>
             ) : (
-              <SubmissionsTable rows={visibleRows} assignment={assignment} />
+              <SubmissionsTable rows={visibleRows} assignment={assignment} onGrade={keepRow} />
             )
           }
         </QueryState>
@@ -336,14 +357,47 @@ function Overview({ data }: { data: AssignmentResponse }) {
           solutionVisibility: assignment.solutionVisibility,
         }}
       />
+
+      {method && (
+        <AutogradeModal
+          opened={autogradeOpen}
+          onClose={() => setAutogradeOpen(false)}
+          assignment={assignment}
+          kind={language.kind}
+          method={method}
+          rows={rows}
+          onStart={(options) => void autograde.start(rows, options)}
+        />
+      )}
     </>
   );
 }
 
-function SubmissionsTable({ rows, assignment }: { rows: SubmissionRow[]; assignment: Assignment }) {
+function SubmissionsTable({
+  rows,
+  assignment,
+  onGrade,
+}: {
+  rows: SubmissionRow[];
+  assignment: Assignment;
+  /** The teacher started on this student's grade inline. */
+  onGrade: (studentId: number) => void;
+}) {
   const navigate = useNavigate();
+  const inputs = useRef(new Map<number, HTMLInputElement>());
+
+  // Enter and the arrow keys move between the rows' grades like a spreadsheet; Enter on the last row just leaves the
+  // input (which saves it).
+  const move = (studentId: number, key: string, current: HTMLInputElement) => {
+    const index = rows.findIndex((r) => r.student.id === studentId);
+    if (index < 0) return;
+    const target = gradeCellTarget(key, index, rows.length);
+    if (target === 'leave') current.blur();
+    else if (typeof target === 'number') inputs.current.get(rows[target]!.student.id)?.focus();
+  };
+
   return (
-    <Table.ScrollContainer minWidth={620}>
+    <Table.ScrollContainer minWidth={760}>
       <Table highlightOnHover verticalSpacing="sm">
         <Table.Thead>
           <Table.Tr>
@@ -362,6 +416,7 @@ function SubmissionsTable({ rows, assignment }: { rows: SubmissionRow[]; assignm
             const to = `/assignments/${assignment.id}/submissions/${student.id}`;
             // The accessible name starts with the visible word so voice control ("click Grade") finds it.
             const action = submission.status === 'submitted' ? 'Grade' : 'Open';
+            const isHandedIn = submission.status === 'submitted' || submission.status === 'graded';
             return (
               <Table.Tr
                 key={student.id}
@@ -385,9 +440,8 @@ function SubmissionsTable({ rows, assignment }: { rows: SubmissionRow[]; assignm
                 <Table.Td>
                   <Group gap={6} wrap="nowrap">
                     <SubmissionStatusBadge status={submission.status} />
-                    {submission.late && (
-                      <LateBadge missing={submission.status !== 'submitted' && submission.status !== 'graded'} />
-                    )}
+                    {submission.late && <LateBadge missing={!isHandedIn} />}
+                    {isHandedIn && matchesSolution(submission.code, assignment.solutionCode) && <SolutionMatchBadge />}
                   </Group>
                 </Table.Td>
                 <Table.Td>
@@ -396,17 +450,18 @@ function SubmissionsTable({ rows, assignment }: { rows: SubmissionRow[]; assignm
                 <Table.Td>
                   <ScoreText percent={submission.autoScore} />
                 </Table.Td>
-                <Table.Td>
-                  {submission.grade != null ? (
-                    <Text size="sm" fw={500}>
-                      {formatGrade(submission.grade)} / {assignment.points}
-                    </Text>
-                  ) : (
-                    <Text size="sm" c="dimmed">
-                      —
-                    </Text>
-                  )}
-                </Table.Td>
+                <GradeCell
+                  assignmentId={assignment.id}
+                  points={assignment.points}
+                  student={student}
+                  submission={submission}
+                  inputRef={(el) => {
+                    if (el) inputs.current.set(student.id, el);
+                    else inputs.current.delete(student.id);
+                  }}
+                  onMove={(key, input) => move(student.id, key, input)}
+                  onEdit={() => onGrade(student.id)}
+                />
                 <Table.Td ta="right">
                   <Button
                     component={Link}
@@ -427,81 +482,4 @@ function SubmissionsTable({ rows, assignment }: { rows: SubmissionRow[]; assignm
       </Table>
     </Table.ScrollContainer>
   );
-}
-
-/**
- * Runs every test (hidden ones included) against each handed-in submission, one at a time in this browser,
- * and stores the results and auto-score. Progress is shown in a single updating notification.
- */
-function useAutogradeAll(assignment: Assignment, language: Language) {
-  const grade = useGradeSubmission(assignment.id);
-  const [running, setRunning] = useState(false);
-  const controllerRef = useRef<AbortController | null>(null);
-
-  // Leaving the page stops the run.
-  useEffect(() => () => controllerRef.current?.abort(), []);
-
-  const start = async (rows: SubmissionRow[]) => {
-    const targets = rows.filter(handedIn);
-    if (targets.length === 0 || controllerRef.current) return;
-    const controller = new AbortController();
-    controllerRef.current = controller;
-    setRunning(true);
-    const id = notifications.show({
-      loading: true,
-      title: `Autograding 1 of ${targets.length}`,
-      message: 'Getting the language ready…',
-      autoClose: false,
-      withCloseButton: false,
-    });
-    let saved = 0;
-    let failed = 0;
-    try {
-      for (const [index, row] of targets.entries()) {
-        if (controller.signal.aborted) break;
-        notifications.update({
-          id,
-          loading: true,
-          title: `Autograding ${index + 1} of ${targets.length}`,
-          message: `Running tests on ${row.student.name}'s code…`,
-          autoClose: false,
-          withCloseButton: false,
-        });
-        const results = await runTests({ kind: language.kind, pseudocode: language.pseudocode }, row.submission.code, assignment.tests, {
-          compareMode: assignment.compareMode,
-          signal: controller.signal,
-          // A new worker per submission, so one student's code can't affect the next one's results.
-          freshWorker: true,
-        });
-        if (controller.signal.aborted) break;
-        try {
-          await grade.mutateAsync({
-            studentId: row.student.id,
-            testResults: results,
-            autoScore: computeAutoScore(assignment.tests, results),
-          });
-          saved += 1;
-        } catch {
-          failed += 1;
-        }
-      }
-    } finally {
-      const stopped = controller.signal.aborted;
-      controllerRef.current = null;
-      setRunning(false);
-      const done = `${saved} of ${targets.length} submission${targets.length === 1 ? '' : 's'} autograded`;
-      notifications.update({
-        id,
-        loading: false,
-        autoClose: 6000,
-        withCloseButton: true,
-        color: failed > 0 ? 'red' : stopped ? 'yellow' : 'teal',
-        icon: failed > 0 || stopped ? <IconAlertTriangle size={18} /> : <IconCheck size={18} />,
-        title: stopped ? 'Autograding stopped' : failed > 0 ? 'Some results could not be saved' : 'Autograding finished',
-        message: failed > 0 ? `${done}. ${failed} could not be saved; try again.` : stopped ? `${done} before stopping.` : `${done}. Auto scores are up to date.`,
-      });
-    }
-  };
-
-  return { running, start, stop: () => controllerRef.current?.abort() };
 }

@@ -81,6 +81,8 @@ export interface SubmissionDbRow {
   test_results: string | null;
   auto_score: number | null;
   grade: number | null;
+  /** 1 = the grade was set by autograde and hasn't been changed by hand since (always 0 without a grade). */
+  auto_graded: 0 | 1;
   feedback: string | null;
   graded_at: string | null;
   graded_by: number | null;
@@ -224,6 +226,7 @@ CREATE TABLE IF NOT EXISTS submissions (
   test_results TEXT,
   auto_score REAL,
   grade REAL,
+  auto_graded INTEGER NOT NULL DEFAULT 0,
   feedback TEXT,
   graded_at TEXT,
   graded_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
@@ -257,6 +260,10 @@ export function migrate(db: Database.Database): void {
       // write feedback), so mark those rows as returned.
       db.exec("UPDATE submissions SET returned_at = updated_at WHERE status = 'in_progress' AND feedback IS NOT NULL");
     })();
+  }
+  // Grades that existed before auto_graded count as entered by the teacher.
+  if (!submissionColumns.some((c) => c.name === 'auto_graded')) {
+    db.exec('ALTER TABLE submissions ADD COLUMN auto_graded INTEGER NOT NULL DEFAULT 0');
   }
   const assignmentColumns = db.prepare('PRAGMA table_info(assignments)').all() as { name: string }[];
   if (!assignmentColumns.some((c) => c.name === 'solution_code')) {

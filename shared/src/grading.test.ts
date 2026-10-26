@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { computeAutoScore } from './grading';
+import { computeAutoScore, gradeFromAutoScore, matchesSolution, normalizeCode } from './grading';
 import type { TestCase, TestResult } from './types';
 
 const test = (id: string, points: number): TestCase => ({ id, name: id, input: '', expectedOutput: '', hidden: false, points });
@@ -35,5 +35,37 @@ describe('computeAutoScore', () => {
   it('returns null without tests or results', () => {
     expect(computeAutoScore([], [result('a', true)])).toBeNull();
     expect(computeAutoScore([test('a', 1)], [])).toBeNull();
+  });
+});
+
+describe('matchesSolution', () => {
+  const solution = 'INPUT n\nOUTPUT n * 2\n';
+
+  it('ignores line endings, trailing spaces and blank lines', () => {
+    expect(matchesSolution('INPUT n\r\n\r\nOUTPUT n * 2   ', solution)).toBe(true);
+    expect(matchesSolution('\n\nINPUT n\nOUTPUT n * 2', solution)).toBe(true);
+    expect(normalizeCode('a  \r\n\r\n  b\t\n')).toBe('a\n  b');
+  });
+
+  it('still counts indentation, spacing inside lines and capital letters', () => {
+    expect(matchesSolution('  INPUT n\nOUTPUT n * 2', solution)).toBe(false);
+    expect(matchesSolution('INPUT n\nOUTPUT n*2', solution)).toBe(false);
+    expect(matchesSolution('input n\noutput n * 2', solution)).toBe(false);
+  });
+
+  it('never matches a blank solution', () => {
+    expect(matchesSolution('', '')).toBe(false);
+    expect(matchesSolution('   \n', ' \n\n')).toBe(false);
+    expect(matchesSolution('x', null)).toBe(false);
+  });
+});
+
+describe('gradeFromAutoScore', () => {
+  it('scales to the points and rounds to 1 decimal', () => {
+    expect(gradeFromAutoScore(100, 10)).toBe(10);
+    expect(gradeFromAutoScore(33.3, 10)).toBe(3.3);
+    expect(gradeFromAutoScore(66.7, 15)).toBe(10);
+    expect(gradeFromAutoScore(0, 100)).toBe(0);
+    expect(gradeFromAutoScore(50, 0)).toBe(0);
   });
 });

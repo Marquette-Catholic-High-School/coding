@@ -49,8 +49,8 @@ class FakeWorker {
     return runs[runs.length - 1]!;
   }
 
-  finish(recycle = false): void {
-    this.emit({ type: 'done', id: this.lastRun().id, status: 'ok', error: null, recycle });
+  finish(recycle = false, readInput = false): void {
+    this.emit({ type: 'done', id: this.lastRun().id, status: 'ok', error: null, readInput, recycle });
   }
 }
 
@@ -282,5 +282,72 @@ describe('output a stuck program could not send', () => {
     expect(outcome.stdout).toBe('a\nb\n');
     expect(worker.terminated).toBe(true);
     await tick();
+  });
+});
+
+describe('run outcomes', () => {
+  it('say the program started and whether it read input', async () => {
+    const rt = await load(false);
+    const handle = rt.startRun({ kind: 'javascript' }, "console.log(prompt('Number? '))", { stdin: [], interactive: false });
+    const worker = FakeWorker.all[0]!;
+    worker.emit({ type: 'phase', id: worker.lastRun().id, phase: 'running' });
+    // prompt() got null without an error, so the program still finished 'ok'.
+    worker.finish(true, true);
+    expect(await handle.done).toMatchObject({ status: 'ok', started: true, readInput: true });
+
+    const plain = rt.startRun({ kind: 'javascript' }, 'console.log(1)');
+    const next = FakeWorker.all[FakeWorker.all.length - 1]!;
+    next.emit({ type: 'phase', id: next.lastRun().id, phase: 'running' });
+    next.finish(true);
+    expect(await plain.done).toMatchObject({ status: 'ok', started: true, readInput: false });
+  });
+
+  it("count an input request as reading input", async () => {
+    const rt = await load(true);
+    const handle = rt.startRun({ kind: 'python' }, 'input()', { interactive: true });
+    const worker = FakeWorker.all[0]!;
+    const { id } = worker.lastRun();
+    worker.emit({ type: 'phase', id, phase: 'running' });
+    worker.emit({ type: 'input-request', id, prompt: null });
+    handle.stop();
+    expect(await handle.done).toMatchObject({ status: 'stopped', started: true, readInput: true });
+  });
+
+  it("tell a runtime that couldn't load apart from the program failing", async () => {
+    const rt = await load(true);
+    const handle = rt.startRun({ kind: 'python' }, 'print(1)', { freshWorker: true });
+    const worker = FakeWorker.all[0]!;
+    const { id } = worker.lastRun();
+    worker.emit({ type: 'phase', id, phase: 'loading' });
+    worker.emit({ type: 'done', id, status: 'error', error: { message: "Couldn't load the Python runner." }, readInput: false, recycle: false });
+    const outcome = await handle.done;
+    expect(outcome).toMatchObject({ status: 'error', started: false });
+    expect(rt.runnerFailed(outcome)).toBe(true);
+  });
+
+  it('count a worker that crashes while loading as the runner failing, and later crashes as the program', async () => {
+    const rt = await load(true);
+    const early = rt.startRun({ kind: 'python' }, 'print(1)', { freshWorker: true });
+    FakeWorker.all[0]!.crash('the worker failed to start');
+    expect(rt.runnerFailed(await early.done)).toBe(true);
+
+    const late = rt.startRun({ kind: 'python' }, 'x = [1] * 10**12', { freshWorker: true });
+    const worker = FakeWorker.all[1]!;
+    worker.emit({ type: 'phase', id: worker.lastRun().id, phase: 'running' });
+    worker.crash('out of memory');
+    const outcome = await late.done;
+    expect(outcome).toMatchObject({ status: 'error', started: true });
+    expect(rt.runnerFailed(outcome)).toBe(false);
+  });
+
+  it('report tests the runner could not run', async () => {
+    const rt = await load(true);
+    const onRunnerError = vi.fn();
+    const results = rt.runTests({ kind: 'python' }, 'print(1)', [test('a')], { compareMode: 'trim', freshWorker: true, onRunnerError });
+    await vi.waitFor(() => expect(FakeWorker.all[0]?.runs()).toHaveLength(1));
+    FakeWorker.all[0]!.crash('the worker failed to start');
+    const [result] = await results;
+    expect(result).toMatchObject({ passed: false, durationMs: 0 });
+    expect(onRunnerError).toHaveBeenCalledWith(expect.stringContaining('the worker failed to start'));
   });
 });

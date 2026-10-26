@@ -15,6 +15,15 @@ function truncate(text: string, max: number, marker: string): string {
   return text.length <= max ? text : `${text.slice(0, max)}${marker}`;
 }
 
+/**
+ * The code runner itself failed before the program started: the language runtime couldn't load (e.g. Python
+ * couldn't be downloaded), or the worker couldn't start or crashed while loading. The outcome says nothing about the
+ * program. (A run stopped while loading isn't a failure.)
+ */
+export function runnerFailed(outcome: RunOutcome): boolean {
+  return !outcome.started && outcome.status === 'error';
+}
+
 /** Error text for a test result: null when the program finished normally. */
 export function outcomeErrorText(outcome: RunOutcome): string | null {
   switch (outcome.status) {
@@ -47,7 +56,8 @@ export function testResultFromOutcome(test: TestCase, outcome: RunOutcome, compa
 
 /**
  * Runs the tests one after another (non-interactive, `test.input` as stdin). Stops early when `signal` aborts;
- * the test that was running is left out of the results. Never throws.
+ * the test that was running is left out of the results. A test the code runner couldn't run (see `runnerFailed`)
+ * fails with the runner's error and is reported to `onRunnerError`. Never throws.
  */
 export async function runTestsWith(
   start: StartRun,
@@ -58,6 +68,13 @@ export async function runTestsWith(
 ): Promise<TestResult[]> {
   const { signal } = options;
   const results: TestResult[] = [];
+  const runnerError = (message: string) => {
+    try {
+      options.onRunnerError?.(message);
+    } catch {
+      // A failing callback must not stop the remaining tests.
+    }
+  };
   for (let index = 0; index < tests.length; index++) {
     if (signal?.aborted) break;
     const test = tests[index]!;
@@ -78,6 +95,7 @@ export async function runTestsWith(
       }
       if (signal?.aborted && outcome.status === 'stopped') break;
       result = testResultFromOutcome(test, outcome, options.compareMode);
+      if (runnerFailed(outcome)) runnerError(result.error ?? "The code runner didn't start.");
     } catch (err) {
       result = {
         testId: test.id,
@@ -86,6 +104,7 @@ export async function runTestsWith(
         error: `Couldn't run this test: ${err instanceof Error ? err.message : String(err)}`,
         durationMs: 0,
       };
+      runnerError(result.error!);
     }
     results.push(result);
     try {

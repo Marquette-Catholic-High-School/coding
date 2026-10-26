@@ -1,4 +1,4 @@
-import { computeAutoScore, solutionReleased, type Assignment, type Submission, type TestResult } from '@codeclass/shared';
+import { gradeFromAutoScore, matchesSolution, solutionReleased, type Assignment, type Submission, type TestResult } from '@codeclass/shared';
 import {
   Alert,
   Avatar,
@@ -21,9 +21,10 @@ import { useCallback, useRef, useState, type ReactNode } from 'react';
 import { useBlocker } from 'react-router';
 import { useGradeSubmission } from '../../api/assignments';
 import { fieldErrors } from '../../api/client';
-import { LateBadge, scoreColor, ScoreText, SubmissionStatusBadge } from '../../components/badges';
+import { LateBadge, scoreColor, ScoreText, SolutionMatchBadge, SubmissionStatusBadge } from '../../components/badges';
 import { notifyError, notifySuccess } from '../../components/notify';
 import { RelativeTime } from '../../components/RelativeTime';
+import { autoScoreView } from './autoScoreView';
 
 interface GradeValues {
   /** NumberInput yields '' while empty. */
@@ -44,7 +45,7 @@ function InfoRow({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
-/** Side card of the grading page: who, status, auto score, grade + feedback, save / return for revision. */
+/** Side card of the grading page: who, status, auto score, grade + feedback, save / return for revision. Saving here is a hand grade. */
 export function GradeForm({
   assignment,
   student,
@@ -62,6 +63,8 @@ export function GradeForm({
   const mutation = useGradeSubmission(assignment.id);
   const [pending, setPending] = useState<'grade' | 'return' | 'results' | null>(null);
   const handedIn = submission.status === 'submitted' || submission.status === 'graded';
+  // Not-started work shows the starter code, which isn't the student's.
+  const matchesYourSolution = submission.status !== 'not_started' && matchesSolution(submission.code, assignment.solutionCode);
 
   const form = useForm<GradeValues>({
     mode: 'uncontrolled',
@@ -84,11 +87,14 @@ export function GradeForm({
     savedRef.current = JSON.stringify(form.getValues());
   };
 
-  const tests = assignment.tests;
-  const results = rerunResults ?? submission.testResults;
-  const autoScore = rerunResults ? computeAutoScore(tests, rerunResults) : submission.autoScore;
-  const passed = results ? tests.filter((t) => results.some((r) => r.testId === t.id && r.passed)).length : 0;
-  const hiddenNotRun = !!results && tests.some((t) => t.hidden && !results.some((r) => r.testId === t.id));
+  const auto = autoScoreView({
+    tests: assignment.tests,
+    testResults: submission.testResults,
+    autoScore: submission.autoScore,
+    rerunResults,
+    matchesSolution: matchesYourSolution,
+  });
+  const autoScore = auto.score;
   const resultsPatch = rerunResults ? { testResults: rerunResults, autoScore } : {};
 
   const feedbackValue = () => form.getValues().feedback.trim() || null;
@@ -163,7 +169,7 @@ export function GradeForm({
 
   const applyAutoScore = () => {
     if (autoScore == null) return;
-    form.setFieldValue('grade', Math.round((autoScore / 100) * assignment.points * 10) / 10);
+    form.setFieldValue('grade', gradeFromAutoScore(autoScore, assignment.points));
     form.clearFieldError('grade');
   };
 
@@ -197,6 +203,11 @@ export function GradeForm({
             </Text>
           )}
         </InfoRow>
+        {matchesYourSolution && (
+          <InfoRow label="Code">
+            <SolutionMatchBadge />
+          </InfoRow>
+        )}
         {submission.returnedAt && (
           <InfoRow label="Returned">
             <RelativeTime date={submission.returnedAt} size="sm" />
@@ -214,9 +225,10 @@ export function GradeForm({
       <Text size="xs" c="dimmed" tt="uppercase" fw={700} mb="xs">
         Auto score
       </Text>
-      {tests.length === 0 ? (
+      {auto.empty ? (
         <Text size="sm" c="dimmed">
-          This assignment has no tests, so there's no auto score.
+          This assignment has no tests, so there's no auto score
+          {assignment.hasSolution ? '. Autograde can still give full marks to work that matches your solution.' : '.'}
         </Text>
       ) : (
         <Group gap="md" wrap="nowrap" align="center">
@@ -232,16 +244,12 @@ export function GradeForm({
             }
           />
           <Stack gap={4} style={{ minWidth: 0 }}>
-            <Text size="sm">{results ? `${passed} of ${tests.length} tests passed` : "Tests haven't been run yet"}</Text>
-            {rerunResults ? (
-              <Text size="xs" c="dimmed">
-                From your test run, not saved yet.
+            <Text size="sm">{auto.summary}</Text>
+            {auto.notes.map((note) => (
+              <Text key={note} size="xs" c="dimmed">
+                {note}
               </Text>
-            ) : hiddenNotRun || !results ? (
-              <Text size="xs" c="dimmed">
-                Use Run tests to include the hidden tests.
-              </Text>
-            ) : null}
+            ))}
             <Group gap="xs" mt={4}>
               <Button size="xs" variant="light" leftSection={<IconMathFunction size={16} />} onClick={applyAutoScore} disabled={autoScore == null}>
                 Use auto-score
@@ -262,7 +270,9 @@ export function GradeForm({
         <Stack gap="md">
           <NumberInput
             label="Grade"
-            description={`Out of ${assignment.points} point${assignment.points === 1 ? '' : 's'}.`}
+            description={`Out of ${assignment.points} point${assignment.points === 1 ? '' : 's'}.${
+              submission.autoGraded ? ' Set by autograde; saving it here makes it your own grade.' : ''
+            }`}
             placeholder="e.g. 8"
             min={0}
             max={assignment.points}

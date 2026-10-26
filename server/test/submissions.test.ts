@@ -291,6 +291,198 @@ describe('teacher grading', () => {
   });
 });
 
+describe('autograded grades', () => {
+  const patch = (id: number, studentId: number, body: unknown) =>
+    teacher.patch<SubmissionResponse>(`/assignments/${id}/submissions/${studentId}`, body);
+
+  it('stores and returns autoGraded until the teacher changes the grade by hand', async () => {
+    const id = await createAssignment();
+    await zed.client.post(`/assignments/${id}/submit`, { code: 'zed' });
+
+    const auto = await patch(id, zed.id, {
+      testResults: [result('v1', true), result('v2', false), result('h1', true)],
+      autoScore: 66.7,
+      grade: 6.7,
+      status: 'graded',
+      autoGraded: true,
+    });
+    expect(auto.status).toBe(200);
+    expect(auto.body.submission).toMatchObject({ status: 'graded', grade: 6.7, autoScore: 66.7, autoGraded: true });
+    expect(dbRow(id, zed.id)!.auto_graded).toBe(1);
+    const rows = await teacher.get<SubmissionRowsResponse>(`/assignments/${id}/submissions`);
+    expect(rows.body.rows.find((r) => r.student.id === zed.id)!.submission.autoGraded).toBe(true);
+    expect(rows.body.rows.find((r) => r.student.id === amy.id)!.submission.autoGraded).toBe(false);
+    const detail = await teacher.get<SubmissionDetailResponse>(`/assignments/${id}/submissions/${zed.id}`);
+    expect(detail.body.submission.autoGraded).toBe(true);
+    expect((await zed.client.get<SubmissionResponse>(`/assignments/${id}/submission`)).body.submission.autoGraded).toBe(true);
+
+    // Fresh results, feedback, and "graded" without a grade don't change who set the grade.
+    const rerun = await patch(id, zed.id, { testResults: [result('v1', true), result('v2', true), result('h1', true)] });
+    expect(rerun.body.submission).toMatchObject({ status: 'graded', grade: 6.7, autoScore: 100, autoGraded: true });
+    const feedback = await patch(id, zed.id, { feedback: 'Check v2' });
+    expect(feedback.body.submission).toMatchObject({ grade: 6.7, feedback: 'Check v2', autoGraded: true });
+    const regraded = await patch(id, zed.id, { status: 'graded', feedback: 'Checked' });
+    expect(regraded.body.submission).toMatchObject({ grade: 6.7, autoGraded: true });
+
+    // A grade without the flag is the teacher's, even the same number.
+    const byHand = await patch(id, zed.id, { grade: 6.7 });
+    expect(byHand.body.submission).toMatchObject({ status: 'graded', grade: 6.7, autoGraded: false });
+    expect(dbRow(id, zed.id)!.auto_graded).toBe(0);
+    const explicitFalse = await patch(id, zed.id, { grade: 7, autoGraded: false });
+    expect(explicitFalse.body.submission).toMatchObject({ grade: 7, autoGraded: false });
+    const reauto = await patch(id, zed.id, { grade: 10, status: 'graded', autoGraded: true });
+    expect(reauto.body.submission).toMatchObject({ grade: 10, autoGraded: true });
+  });
+
+  it('clears autoGraded when the grade goes away', async () => {
+    const id = await createAssignment();
+    await amy.client.post(`/assignments/${id}/submit`, { code: 'amy' });
+
+    expect((await patch(id, amy.id, { grade: 10, status: 'graded', autoGraded: true })).body.submission.autoGraded).toBe(true);
+    const returned = await patch(id, amy.id, { status: 'in_progress', feedback: 'Try again' });
+    expect(returned.body.submission).toMatchObject({ status: 'in_progress', grade: null, autoGraded: false });
+    expect(dbRow(id, amy.id)!.auto_graded).toBe(0);
+
+    // The student hands it in again: still nothing autograded.
+    const again = await amy.client.post<SubmissionResponse>(`/assignments/${id}/submit`, { code: 'amy v2' });
+    expect(again.body.submission).toMatchObject({ status: 'submitted', grade: null, autoGraded: false });
+
+    expect((await patch(id, amy.id, { grade: 9, autoGraded: true })).body.submission.autoGraded).toBe(true);
+    const backToSubmitted = await patch(id, amy.id, { status: 'submitted' });
+    expect(backToSubmitted.body.submission).toMatchObject({ status: 'submitted', grade: null, autoGraded: false });
+    expect(dbRow(id, amy.id)!.auto_graded).toBe(0);
+
+    // A grade sent with a "not graded" status is dropped, and so is the flag.
+    const dropped = await patch(id, amy.id, { grade: 9, status: 'in_progress', autoGraded: true });
+    expect(dropped.body.submission).toMatchObject({ status: 'in_progress', grade: null, autoGraded: false });
+    expect(dbRow(id, amy.id)!.auto_graded).toBe(0);
+  });
+
+  it('ignores autoGraded without a grade', async () => {
+    const id = await createAssignment();
+    await mia.client.post(`/assignments/${id}/submit`, { code: 'mia' });
+
+    const resultsOnly = await patch(id, mia.id, { testResults: [result('v1', true)], autoScore: 11.1, autoGraded: true });
+    expect(resultsOnly.status).toBe(200);
+    expect(resultsOnly.body.submission).toMatchObject({ status: 'submitted', grade: null, autoScore: 11.1, autoGraded: false });
+    expect(dbRow(id, mia.id)!.auto_graded).toBe(0);
+    const nullGrade = await patch(id, mia.id, { grade: null, autoGraded: true });
+    expect(nullGrade.body.submission).toMatchObject({ status: 'submitted', grade: null, autoGraded: false });
+    expect(dbRow(id, mia.id)!.auto_graded).toBe(0);
+    const missing = await patch(id, mia.id, { status: 'graded', autoGraded: true });
+    expect(missing.status).toBe(400);
+    expect(dbRow(id, mia.id)).toMatchObject({ status: 'submitted', auto_graded: 0 });
+  });
+});
+
+describe('grading work that changed since it was looked at', () => {
+  // Untyped: these responses are often 409 errors.
+  const patch = (id: number, studentId: number, body: unknown) => teacher.patch(`/assignments/${id}/submissions/${studentId}`, body);
+
+  it('saves when expectedUpdatedAt matches, and refuses without saving anything when it does not', async () => {
+    const id = await createAssignment();
+    const handedIn = await amy.client.post<SubmissionResponse>(`/assignments/${id}/submit`, {
+      code: 'amy',
+      testResults: [result('v1', true)],
+    });
+    const loaded = handedIn.body.submission.updatedAt!;
+
+    const ok = await patch(id, amy.id, { grade: 8, expectedUpdatedAt: loaded });
+    expect(ok.status).toBe(200);
+    expect(ok.body.submission).toMatchObject({ status: 'graded', grade: 8 });
+    expect(ok.body.submission.updatedAt).not.toBe(loaded);
+
+    const before = dbRow(id, amy.id)!;
+    const stale = await patch(id, amy.id, {
+      grade: 2,
+      status: 'graded',
+      autoGraded: true,
+      feedback: 'Stale',
+      testResults: [result('v1', false), result('v2', false), result('h1', false)],
+      autoScore: 0,
+      expectedUpdatedAt: loaded,
+    });
+    expect(stale.status).toBe(409);
+    expect(stale.body.error.message).toBe("Amy Adams's work changed while you were grading it. Reload to see the latest version.");
+    expect(dbRow(id, amy.id)).toEqual(before);
+
+    // Results-only and return-for-revision patches are checked too.
+    expect((await patch(id, amy.id, { testResults: [result('v1', false)], expectedUpdatedAt: loaded })).status).toBe(409);
+    expect((await patch(id, amy.id, { status: 'in_progress', expectedUpdatedAt: loaded })).status).toBe(409);
+    expect(dbRow(id, amy.id)).toEqual(before);
+
+    // Without expectedUpdatedAt the PATCH works as before.
+    expect((await patch(id, amy.id, { feedback: 'Nice' })).status).toBe(200);
+  });
+
+  it('treats null as "not started": creates the row for a student with no work, refuses once work exists', async () => {
+    const id = await createAssignment();
+    const missing = await patch(id, mia.id, { grade: 0, feedback: 'Missing', expectedUpdatedAt: null });
+    expect(missing.status).toBe(200);
+    expect(missing.body.submission).toMatchObject({ status: 'graded', grade: 0, code: '// starter', autoGraded: false });
+    expect(dbRow(id, mia.id)).toBeDefined();
+
+    const before = dbRow(id, mia.id)!;
+    const again = await patch(id, mia.id, { grade: 1, expectedUpdatedAt: null });
+    expect(again.status).toBe(409);
+    expect(dbRow(id, mia.id)).toEqual(before);
+
+    // The student started after the teacher loaded the list: the not-started view is stale.
+    const started = await createAssignment();
+    expect((await zed.client.put(`/assignments/${started}/submission`, { code: 'zed draft' })).status).toBe(200);
+    const late = await patch(started, zed.id, { grade: 0, expectedUpdatedAt: null });
+    expect(late.status).toBe(409);
+    expect(dbRow(started, zed.id)).toMatchObject({ status: 'in_progress', grade: null, code: 'zed draft' });
+
+    // A not-started student with a made-up timestamp: refused before any row is created.
+    const empty = await createAssignment();
+    expect((await patch(empty, amy.id, { grade: 5, expectedUpdatedAt: '2026-01-01T00:00:00.000Z' })).status).toBe(409);
+    expect(dbRow(empty, amy.id)).toBeUndefined();
+  });
+
+  it('refuses a grade for work the student unsubmitted after the teacher loaded the list', async () => {
+    const id = await createAssignment();
+    await zed.client.post(`/assignments/${id}/submit`, { code: 'zed v1' });
+    const rows = await teacher.get<SubmissionRowsResponse>(`/assignments/${id}/submissions`);
+    const seen = rows.body.rows.find((r) => r.student.id === zed.id)!.submission;
+    expect(seen.status).toBe('submitted');
+
+    // Straight away, so the unsubmit can land in the same millisecond as the hand-in.
+    expect((await zed.client.post(`/assignments/${id}/unsubmit`)).status).toBe(200);
+    const refused = await patch(id, zed.id, { grade: 10, status: 'graded', autoGraded: true, autoScore: 100, expectedUpdatedAt: seen.updatedAt });
+    expect(refused.status).toBe(409);
+    expect(refused.body.error.message).toMatch(/Zed Zimmer's work changed/);
+    expect(dbRow(id, zed.id)).toMatchObject({ status: 'in_progress', grade: null, auto_score: null, auto_graded: 0 });
+    // The student can keep working.
+    expect((await zed.client.put(`/assignments/${id}/submission`, { code: 'zed v2' })).status).toBe(200);
+
+    // Reloaded: the teacher can grade (here a 0 for work that isn't handed in).
+    const fresh = (await teacher.get<SubmissionDetailResponse>(`/assignments/${id}/submissions/${zed.id}`)).body.submission;
+    const graded = await patch(id, zed.id, { grade: 0, expectedUpdatedAt: fresh.updatedAt });
+    expect(graded.status).toBe(200);
+    expect(graded.body.submission).toMatchObject({ status: 'graded', grade: 0, code: 'zed v2' });
+  });
+
+  it('changes updatedAt on every write, however quickly they follow each other', async () => {
+    const id = await createAssignment();
+    let current = (await mia.client.post<SubmissionResponse>(`/assignments/${id}/submit`, { code: 'mia' })).body.submission.updatedAt!;
+    const seen = new Set([current]);
+    for (let i = 0; i < 10; i += 1) {
+      const res = await patch(id, mia.id, { testResults: [result('v1', i % 2 === 0)], expectedUpdatedAt: current });
+      expect(res.status).toBe(200);
+      current = res.body.submission.updatedAt!;
+      expect(seen.has(current)).toBe(false);
+      seen.add(current);
+    }
+    // Even when the stored time is ahead of the clock, the next write moves it forward.
+    const ahead = '2099-01-01T00:00:00.000Z';
+    db.prepare('UPDATE submissions SET updated_at = ? WHERE assignment_id = ? AND student_id = ?').run(ahead, id, mia.id);
+    const next = await patch(id, mia.id, { grade: 5, expectedUpdatedAt: ahead });
+    expect(next.status).toBe(200);
+    expect(next.body.submission.updatedAt).toBe('2099-01-01T00:00:00.001Z');
+  });
+});
+
 describe('return for revision after the due date', () => {
   const hoursFromNow = (h: number) => new Date(Date.now() + h * 3_600_000).toISOString();
 
@@ -414,6 +606,30 @@ describe('return for revision after the due date', () => {
     expect((await ann.client.post(`/assignments/${id}/submit`, { code: 'x' })).status).toBe(409);
   });
 
+  it('keeps the return when a grade is taken off work handed in again (autograde can no longer score it)', async () => {
+    const { id } = await dueAfterOnTimeHandIns();
+    expect((await owner.patch(`/assignments/${id}/submissions/${ann.id}`, { status: 'in_progress' })).status).toBe(200);
+    // Handed in again after the due date: allowed, and not late, because it was returned.
+    expect((await ann.client.post(`/assignments/${id}/submit`, { code: 'v2' })).status).toBe(200);
+    const auto = await owner.patch<SubmissionResponse>(`/assignments/${id}/submissions/${ann.id}`, { grade: 10, autoGraded: true });
+    expect(auto.body.submission).toMatchObject({ status: 'graded', autoGraded: true, late: false });
+
+    const ungraded = await owner.patch<SubmissionResponse>(`/assignments/${id}/submissions/${ann.id}`, {
+      status: 'submitted',
+      autoScore: null,
+      expectedUpdatedAt: auto.body.submission.updatedAt,
+    });
+    expect(ungraded.status).toBe(200);
+    expect(ungraded.body.submission).toMatchObject({
+      status: 'submitted',
+      grade: null,
+      autoGraded: false,
+      autoScore: null,
+      returnedAt: expect.any(String),
+      late: false,
+    });
+  });
+
   it('adds returned_at to databases created before it existed, marking work that was returned', () => {
     const old = new Database(':memory:');
     try {
@@ -432,6 +648,25 @@ describe('return for revision after the due date', () => {
         { id: 2, returned_at: null },
         { id: 3, returned_at: null },
       ]);
+    } finally {
+      old.close();
+    }
+  });
+
+  it('adds auto_graded to databases created before it existed, counting existing grades as the teacher\'s', () => {
+    const old = new Database(':memory:');
+    try {
+      old.exec('CREATE TABLE assignments (id INTEGER PRIMARY KEY, title TEXT NOT NULL)');
+      old.exec(`CREATE TABLE submissions (
+        id INTEGER PRIMARY KEY, status TEXT NOT NULL, grade REAL, feedback TEXT, returned_at TEXT, updated_at TEXT NOT NULL)`);
+      old.prepare("INSERT INTO submissions (id, status, grade, updated_at) VALUES (1, 'graded', 9, '2026-01-02T00:00:00.000Z')").run();
+      migrate(old);
+      migrate(old); // idempotent
+      const columns = old.prepare('PRAGMA table_info(submissions)').all() as { name: string; notnull: number; dflt_value: string | null }[];
+      expect(columns.find((c) => c.name === 'auto_graded')).toMatchObject({ notnull: 1, dflt_value: '0' });
+      expect(old.prepare('SELECT id, grade, auto_graded FROM submissions').all()).toEqual([{ id: 1, grade: 9, auto_graded: 0 }]);
+      old.prepare("INSERT INTO submissions (id, status, updated_at) VALUES (2, 'submitted', '2026-01-03T00:00:00.000Z')").run();
+      expect(old.prepare('SELECT auto_graded FROM submissions WHERE id = 2').pluck().get()).toBe(0);
     } finally {
       old.close();
     }

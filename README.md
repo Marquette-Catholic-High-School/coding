@@ -33,8 +33,11 @@ JavaScript, Python and a *Classroom Pseudocode* language.
    straight away.
    **Copy from another class** on the **Assignments** tab copies assignments, with their tests and solutions, from
    any of your classes. Copies start as drafts with no due date unless you choose otherwise.
-5. Students code, run tests and submit. You grade from the assignment page. **Autograde all** runs every test,
-   hidden ones included, against every submission.
+5. Students code, run tests and submit. You grade from the assignment page: type each grade straight into the
+   student list, or open a student's work to read it and leave feedback. **Autograde** grades handed-in work for
+   you: work that matches your solution gets full marks, other work scores the share of tests it passes (hidden
+   ones included), and with no tests, work that prints the same as your solution gets full marks. It updates the
+   grades it set before and keeps the ones you typed yourself unless you choose to replace them.
 
 ## Languages
 
@@ -178,8 +181,9 @@ npm test            # vitest: engine, server API, runtime and IDE helpers
 ## Limits worth knowing
 
 - Test results that students see are computed in their browser, so a determined student could fake them. Hidden tests
-  never leave the server for students, and **Autograde all** re-runs every test in the teacher's browser. Use those
+  never leave the server for students, and **Autograde** re-runs every test in the teacher's browser. Use those
   results when grading.
+- If your solution is visible to students before they hand in, "matches your solution" doesn't show they wrote it.
 - CodeClass doesn't send email, so it can't confirm that a student owns the email address they sign up with. Anyone
   who signs up with an invited address joins that class, so check the **Joined** list under **Invited by email**.
 - Python needs the jsDelivr CDN on its first run in each browser. All other runtimes are bundled.

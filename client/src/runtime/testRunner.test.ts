@@ -1,7 +1,7 @@
 import type { TestCase } from '@codeclass/shared';
 import { describe, expect, it, vi } from 'vitest';
 import { TIMEOUT_MESSAGE } from './protocol';
-import { MAX_TEST_OUTPUT_CHARS, outcomeErrorText, runTestsWith, testResultFromOutcome, type StartRun } from './testRunner';
+import { MAX_TEST_OUTPUT_CHARS, outcomeErrorText, runnerFailed, runTestsWith, testResultFromOutcome, type StartRun } from './testRunner';
 import type { RunOptions, RunOutcome } from './types';
 
 const target = { kind: 'python' as const };
@@ -11,7 +11,7 @@ function test(id: string, input: string, expectedOutput: string): TestCase {
 }
 
 function outcome(partial: Partial<RunOutcome>): RunOutcome {
-  return { status: 'ok', error: null, stdout: '', durationMs: 12.4, ...partial };
+  return { status: 'ok', error: null, stdout: '', durationMs: 12.4, started: true, readInput: false, ...partial };
 }
 
 /** A fake runner that "doubles" its first input line. */
@@ -75,8 +75,38 @@ describe('runTestsWith', () => {
     const start: StartRun = () => {
       throw new Error('no workers');
     };
-    const [result] = await runTestsWith(start, target, 'code', [test('a', '', '')], { compareMode: 'exact' });
+    const onRunnerError = vi.fn();
+    const [result] = await runTestsWith(start, target, 'code', [test('a', '', '')], { compareMode: 'exact', onRunnerError });
     expect(result).toMatchObject({ testId: 'a', passed: false, error: "Couldn't run this test: no workers" });
+    expect(onRunnerError).toHaveBeenCalledWith("Couldn't run this test: no workers");
+  });
+
+  it("reports tests the code runner couldn't run, apart from tests the program failed", async () => {
+    const loadFailure = outcome({
+      status: 'error',
+      started: false,
+      durationMs: 0,
+      error: { message: "Couldn't load the Python runner. Reload the page and try again." },
+    });
+    const outcomes = [outcome({ status: 'error', error: { message: 'NameError' } }), loadFailure];
+    const start: StartRun = () => ({ done: Promise.resolve(outcomes.shift()!), stop() {}, provideInput() {}, endInput() {} });
+    const onRunnerError = vi.fn();
+    const results = await runTestsWith(start, target, 'code', [test('a', '', 'x'), test('b', '', 'x')], { compareMode: 'exact', onRunnerError });
+    expect(results.map((r) => r.passed)).toEqual([false, false]);
+    expect(onRunnerError).toHaveBeenCalledTimes(1);
+    expect(onRunnerError).toHaveBeenCalledWith("Couldn't load the Python runner. Reload the page and try again.");
+  });
+});
+
+describe('runnerFailed', () => {
+  it('is an error before the program started', () => {
+    expect(runnerFailed(outcome({ status: 'error', started: false }))).toBe(true);
+  });
+
+  it("isn't the program's own error, or a run stopped while loading", () => {
+    expect(runnerFailed(outcome({ status: 'error' }))).toBe(false);
+    expect(runnerFailed(outcome({ status: 'stopped', started: false }))).toBe(false);
+    expect(runnerFailed(outcome({}))).toBe(false);
   });
 });
 

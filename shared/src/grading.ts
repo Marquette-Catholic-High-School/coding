@@ -61,6 +61,29 @@ export function computeAutoScore(tests: TestCase[], results: TestResult[]): numb
   return Math.round((earned / total) * 1000) / 10;
 }
 
+/**
+ * Code with line endings unified and trailing spaces and blank lines removed, so the same program typed with
+ * different spacing at line ends compares equal. Indentation and everything else still count.
+ */
+export function normalizeCode(code: string): string {
+  return normalizeNewlines(code)
+    .split('\n')
+    .map((line) => line.replace(/\s+$/, ''))
+    .filter((line) => line !== '')
+    .join('\n');
+}
+
+/** `code` is the teacher's solution, ignoring line endings, trailing spaces and blank lines. A blank solution matches nothing. */
+export function matchesSolution(code: string, solution: string | null | undefined): boolean {
+  if (solution == null || solution.trim() === '') return false;
+  return normalizeCode(code) === normalizeCode(solution);
+}
+
+/** Points for an auto score (0–100) on an assignment worth `points`, rounded to 1 decimal. */
+export function gradeFromAutoScore(autoScore: number, points: number): number {
+  return Math.round((autoScore / 100) * points * 10) / 10;
+}
+
 export const COMPARE_MODE_LABELS: Record<CompareMode, string> = {
   exact: 'Exact match',
   trim: 'Ignore trailing spaces and blank lines',
