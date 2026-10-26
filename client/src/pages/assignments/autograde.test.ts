@@ -1,22 +1,33 @@
 import type { Submission, SubmissionRow, TestCase, TestResult } from '@codeclass/shared';
 import { describe, expect, it, vi } from 'vitest';
+import { ApiError } from '../../api/client';
 import type { RunOutcome } from '../../runtime';
 import {
+  AUTOGRADE_ONE_OPTIONS,
+  autogradeAllBlocker,
   autogradeButtonLabel,
   autogradeMethod,
+  autogradeOneBlocker,
+  autogradeOneConfirmation,
+  autogradeOneSummary,
   autogradePatch,
   autogradeRules,
   autogradeScopeOptions,
+  autogradeSubmission,
   autogradeSummary,
   autogradeTargets,
   effectiveScope,
   emptyTally,
+  handGradeToReplace,
   mayAutograde,
+  prepareAutograde,
   referenceProblem,
   referenceSetup,
   scoreSubmission,
+  type AutogradeMethod,
   type AutogradeRunner,
   type AutogradeSetup,
+  type AutogradeStep,
 } from './autograde';
 
 const UPDATED = '2026-10-20T09:00:00.000Z';
@@ -476,5 +487,248 @@ describe('autogradeSummary', () => {
     expect(solutionRun.message).toBe(
       "1 graded · 3 couldn't be checked. The code runner didn't start when your solution ran, so only work that matches it exactly was graded. Reload the page and run autograde again to check the rest. Students can see their new grades now.",
     );
+  });
+});
+
+describe('prepareAutograde', () => {
+  const assignment = { tests: [test('a')], compareMode: 'trim' as const, solutionCode: 'print(1)' };
+  const runProgram = (run: RunOutcome) => ({ runProgram: vi.fn(async () => run) });
+
+  it("doesn't run the solution unless output is compared", async () => {
+    const r = runProgram(outcome({ stdout: '1\n' }));
+    const prepared = await prepareAutograde(assignment, { tests: true, solution: true, output: false }, r);
+    expect(prepared).toEqual({
+      setup: {
+        method: { tests: true, solution: true, output: false },
+        tests: assignment.tests,
+        compareMode: 'trim',
+        solutionCode: 'print(1)',
+        referenceOutput: null,
+        runnerError: null,
+      },
+      reference: null,
+    });
+    expect(r.runProgram).not.toHaveBeenCalled();
+  });
+
+  it('runs the solution once and compares with what it printed', async () => {
+    const r = runProgram(outcome({ stdout: '1\n' }));
+    const prepared = await prepareAutograde({ ...assignment, tests: [] }, { tests: false, solution: true, output: true }, r);
+    expect(r.runProgram).toHaveBeenCalledWith('print(1)');
+    expect(prepared.setup).toMatchObject({ referenceOutput: '1\n', runnerError: null });
+    expect(prepared.reference).toBeNull();
+  });
+
+  it("says why the solution's output can't be compared", async () => {
+    const method = { tests: false, solution: true, output: true };
+    const asks = await prepareAutograde(assignment, method, runProgram(outcome({ stdout: 'Name? ', readInput: true })));
+    expect(asks).toMatchObject({ reference: 'failed', setup: { referenceOutput: null, runnerError: null } });
+    const noRunner = await prepareAutograde(assignment, method, runProgram(loadFailure));
+    expect(noRunner).toMatchObject({ reference: 'runner', setup: { referenceOutput: null, runnerError: LOAD_ERROR } });
+  });
+
+  it('compares nothing when the run was stopped while the solution ran', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const prepared = await prepareAutograde(assignment, { tests: false, solution: true, output: true }, runProgram(outcome({ stdout: '1\n' })), controller.signal);
+    expect(prepared).toMatchObject({ reference: null, setup: { referenceOutput: null } });
+  });
+});
+
+describe('autogradeSubmission', () => {
+  const tests = [test('a'), test('b')];
+  const setup: AutogradeSetup = {
+    method: { tests: true, solution: false, output: false },
+    tests,
+    compareMode: 'trim',
+    solutionCode: '',
+    referenceOutput: null,
+    runnerError: null,
+  };
+  const runner = (results: TestResult[], runnerError: string | null = null): AutogradeRunner => ({
+    runTests: vi.fn(async () => ({ results, runnerError })),
+    runProgram: vi.fn(async () => outcome()),
+  });
+  const options = { ...AUTOGRADE_ONE_OPTIONS, points: 10 };
+  const halfPassed = [result('a', true), result('b', false)];
+
+  it('saves the grade and returns the work as saved', async () => {
+    const saved = submission({ status: 'graded', grade: 5, autoGraded: true, autoScore: 50 });
+    const save = vi.fn(async () => saved);
+    const step = await autogradeSubmission(submission(), setup, runner(halfPassed), options, save);
+    expect(save).toHaveBeenCalledWith({ testResults: halfPassed, autoScore: 50, expectedUpdatedAt: UPDATED, grade: 5, status: 'graded', autoGraded: true });
+    expect(step).toEqual({ outcome: 'graded', result: { score: 50, testResults: halfPassed, matchesSolution: false }, saved });
+  });
+
+  it("saves nothing when there's nothing to store", async () => {
+    const save = vi.fn(async () => submission());
+    const step = await autogradeSubmission(submission(), setup, runner(halfPassed, LOAD_ERROR), options, save);
+    expect(step).toMatchObject({ outcome: 'unchecked', saved: null });
+    expect(save).not.toHaveBeenCalled();
+  });
+
+  it('tells work that changed meanwhile (409) apart from other failures', async () => {
+    const changed = new ApiError(409, "Maya Rivera's work changed while you were grading it.");
+    const conflict = await autogradeSubmission(submission(), setup, runner(halfPassed), options, async () => Promise.reject(changed));
+    expect(conflict).toMatchObject({ outcome: 'changed', saved: null, error: changed });
+    const down = new ApiError(500, 'Server error');
+    expect(await autogradeSubmission(submission(), setup, runner(halfPassed), options, async () => Promise.reject(down))).toMatchObject({
+      outcome: 'failed',
+      saved: null,
+      error: down,
+    });
+  });
+
+  it('saves nothing once the run was stopped', async () => {
+    const controller = new AbortController();
+    const save = vi.fn(async () => submission());
+    const stopping: AutogradeRunner = {
+      runTests: async () => {
+        controller.abort();
+        return { results: halfPassed, runnerError: null };
+      },
+      runProgram: async () => outcome(),
+    };
+    expect(await autogradeSubmission(submission(), setup, stopping, options, save, controller.signal)).toBeNull();
+    expect(save).not.toHaveBeenCalled();
+  });
+});
+
+describe('autograding one student', () => {
+  const hand = submission({ status: 'graded', grade: 8, autoGraded: false });
+
+  it('replaces any grade, a hand grade included', () => {
+    expect(AUTOGRADE_ONE_OPTIONS).toEqual({ scope: 'replace-all', setGrades: true });
+    expect(autogradePatch(hand, { score: 100, matchesSolution: true }, { ...AUTOGRADE_ONE_OPTIONS, points: 10 })).toMatchObject({
+      patch: { grade: 10, status: 'graded', autoGraded: true },
+      outcome: 'graded',
+    });
+  });
+
+  it('is only offered for handed-in work, one run at a time', () => {
+    expect(autogradeOneBlocker({ status: 'submitted' }, null)).toBeNull();
+    expect(autogradeOneBlocker({ status: 'graded' }, null)).toBeNull();
+    for (const status of ['not_started', 'in_progress'] as const) {
+      expect(autogradeOneBlocker({ status }, null)).toBe('Not handed in yet. Only handed-in work can be autograded.');
+    }
+    expect(autogradeOneBlocker({ status: 'submitted' }, { kind: 'all' })).toBe('Wait for autograding to finish.');
+    expect(autogradeOneBlocker({ status: 'submitted' }, { kind: 'one', studentId: 4, name: 'Sam Lee' })).toBe(
+      "Wait until Sam Lee's work is autograded.",
+    );
+  });
+
+  it("disables autograding everything while one student's work is being autograded", () => {
+    expect(autogradeAllBlocker(3, null)).toBeNull();
+    expect(autogradeAllBlocker(0, null)).toBe('Nothing has been handed in yet.');
+    expect(autogradeAllBlocker(3, { kind: 'one', studentId: 4, name: 'Sam Lee' })).toBe("Wait until Sam Lee's work is autograded.");
+    // That run's own button is "Stop autograding".
+    expect(autogradeAllBlocker(3, { kind: 'all' })).toBeNull();
+  });
+
+  it('finds the grade the teacher entered, which autograding would replace', () => {
+    expect(handGradeToReplace(hand, 10)).toBe('8 / 10');
+    expect(handGradeToReplace(submission({ status: 'graded', grade: 7.5, autoGraded: true }), 10)).toBeNull();
+    expect(handGradeToReplace(submission(), 10)).toBeNull();
+  });
+
+  it('confirms replacing a grade the teacher entered or typed', () => {
+    expect(autogradeOneConfirmation(submission(), 10)).toBeNull();
+    expect(autogradeOneConfirmation(submission({ status: 'graded', grade: 9, autoGraded: true }), 10)).toBeNull();
+    expect(autogradeOneConfirmation(hand, 10)).toEqual([
+      'This replaces the grade you entered: 8 / 10.',
+      "If autograde can't score the work, your grade is kept.",
+    ]);
+    expect(autogradeOneConfirmation(submission(), 10, { unsavedGrade: true })).toEqual(["This replaces the grade you've typed but not saved."]);
+    expect(autogradeOneConfirmation(hand, 10, { unsavedGrade: true })).toEqual([
+      'This replaces the grade you entered: 8 / 10.',
+      "It also replaces the grade you've typed but not saved.",
+      "If autograde can't score the work, your grade is kept.",
+    ]);
+  });
+});
+
+describe('autogradeOneSummary', () => {
+  const tests = [test('a'), test('b'), test('c'), { ...test('d'), hidden: true }];
+  const withTests: AutogradeMethod = { tests: true, solution: true, output: false };
+  const withOutput: AutogradeMethod = { tests: false, solution: true, output: true };
+  const context = { name: 'Maya Rivera', before: submission(), outOf: 10, tests, method: withTests, kind: 'python' as const };
+  const step = (partial: Partial<AutogradeStep>): AutogradeStep => ({
+    outcome: 'graded',
+    result: { score: null, matchesSolution: false },
+    saved: null,
+    ...partial,
+  });
+
+  it('says what the grade is and why', () => {
+    const passed = [result('a', true), result('b', true), result('c', true), result('d', false)];
+    expect(autogradeOneSummary(step({ result: { score: 75, testResults: passed, matchesSolution: false } }), context)).toEqual({
+      title: 'Graded 7.5 / 10 — 3 of 4 tests passed',
+      message: 'Maya Rivera can see this grade now.',
+      color: 'teal',
+    });
+    expect(autogradeOneSummary(step({ result: { score: 100, testResults: passed, matchesSolution: true } }), context).title).toBe(
+      'Graded 10 / 10 — matches your solution',
+    );
+    expect(autogradeOneSummary(step({ result: { score: 100, matchesSolution: false } }), { ...context, method: withOutput, tests: [] }).title).toBe(
+      "Graded 10 / 10 — its output matches your solution's",
+    );
+  });
+
+  it("explains work it couldn't score, and what happened to its grade", () => {
+    const unscored = step({ outcome: 'unscored' });
+    expect(autogradeOneSummary(unscored, { ...context, method: withOutput, tests: [] })).toEqual({
+      title: "Couldn't score Maya Rivera's work",
+      message: "Its output differs from your solution's. It's left for you to grade.",
+      color: 'yellow',
+    });
+    expect(autogradeOneSummary(unscored, { ...context, method: withOutput, tests: [], reference: 'silent' }).message).toBe(
+      "Your solution doesn't print anything, so only work that matches it exactly can be scored. It's left for you to grade.",
+    );
+    expect(autogradeOneSummary(unscored, { ...context, method: { tests: false, solution: true, output: false }, kind: 'web', tests: [] }).message).toBe(
+      "It doesn't match your solution, and web pages can't be run here. It's left for you to grade.",
+    );
+    const kept = autogradeOneSummary(step({ outcome: 'kept' }), {
+      ...context,
+      method: withOutput,
+      tests: [],
+      before: submission({ status: 'graded', grade: 8 }),
+    });
+    expect(kept.message).toBe("Its output differs from your solution's. Your grade of 8 / 10 was kept.");
+    const cleared = autogradeOneSummary(step({ outcome: 'cleared' }), {
+      ...context,
+      method: withOutput,
+      tests: [],
+      before: submission({ status: 'graded', grade: 10, autoGraded: true }),
+    });
+    expect(cleared.message).toBe(
+      "Its output differs from your solution's. Its earlier auto grade (10 / 10) was taken off, so it's back in To grade.",
+    );
+  });
+
+  it("reports work it couldn't check because the code runner didn't start", () => {
+    const unchecked = (runnerError: string) =>
+      autogradeOneSummary(step({ outcome: 'unchecked', result: { score: null, matchesSolution: false, runnerError } }), context);
+    expect(unchecked(LOAD_ERROR)).toEqual({
+      title: "The code runner didn't start",
+      message: `Maya Rivera's work wasn't checked, so nothing was changed. ${LOAD_ERROR}`,
+      color: 'red',
+    });
+    expect(unchecked("The code runner didn't start.").message).toBe(
+      "Maya Rivera's work wasn't checked, so nothing was changed. Reload the page and try again.",
+    );
+  });
+
+  it('reports work that changed meanwhile, saves that failed, and a stopped run', () => {
+    expect(autogradeOneSummary(step({ outcome: 'changed' }), context)).toMatchObject({ title: "Maya Rivera's work changed", color: 'yellow' });
+    expect(autogradeOneSummary(step({ outcome: 'failed', error: new ApiError(500, 'The server had a problem.') }), context)).toEqual({
+      title: "Couldn't autograde Maya Rivera's work",
+      message: 'The server had a problem.',
+      color: 'red',
+    });
+    expect(autogradeOneSummary(null, context)).toEqual({
+      title: 'Autograding stopped',
+      message: "Maya Rivera's work wasn't changed. Autograding stops when you leave the page.",
+      color: 'yellow',
+    });
   });
 });

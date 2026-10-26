@@ -21,6 +21,8 @@ export class TestClient {
   cookie = '';
   /** The `cc_csrf` cookie value ('' when none). Cleared to simulate a caller that can't read cookies (a Web Worker). */
   csrf = '';
+  /** Extra headers sent with every request. */
+  headers: Record<string, string> = {};
   constructor(private base: string) {}
 
   async request<T = any>(method: string, path: string, body?: unknown): Promise<TestResponse<T>> {
@@ -32,6 +34,7 @@ export class TestClient {
         ...(this.csrf ? { 'x-codeclass-token': this.csrf } : {}),
         ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
         ...(cookies ? { Cookie: cookies } : {}),
+        ...this.headers,
       },
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });

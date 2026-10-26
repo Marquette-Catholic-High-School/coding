@@ -33,6 +33,7 @@ export function GradeCell({
   inputRef,
   onMove,
   onEdit,
+  busy = false,
 }: {
   assignmentId: number;
   points: number;
@@ -43,6 +44,8 @@ export function GradeCell({
   onMove: (key: string, input: HTMLInputElement) => void;
   /** The teacher started on this grade, so the row stays in view even once it stops matching the tab. */
   onEdit: () => void;
+  /** Autograde is setting this grade (the row's actions show it running): it can't be typed over until it's done. */
+  busy?: boolean;
 }) {
   const queryClient = useQueryClient();
   const mutation = useGradeSubmission(assignmentId);
@@ -128,7 +131,8 @@ export function GradeCell({
                 setDraft(null);
               }
             }}
-            readOnly={saving}
+            readOnly={saving || busy}
+            aria-busy={busy || undefined}
             rightSection={saving ? <Loader size={12} /> : null}
           />
         </Tooltip>

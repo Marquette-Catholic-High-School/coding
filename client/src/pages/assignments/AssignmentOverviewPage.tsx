@@ -3,6 +3,7 @@ import {
   Accordion,
   ActionIcon,
   Avatar,
+  Box,
   Button,
   Card,
   EmptyState,
@@ -58,12 +59,12 @@ import { PageLoader, QueryState } from '../../components/QueryState';
 import { RelativeTime } from '../../components/RelativeTime';
 import { StatCard } from '../../components/StatCard';
 import { usePageTitle } from '../../hooks/usePageTitle';
-import { autogradeMethod } from './autograde';
+import { autogradeAllBlocker, autogradeMethod, autogradeOneBlocker, type AutogradeActivity } from './autograde';
 import { AutogradeModal } from './AutogradeModal';
 import { GradeCell } from './GradeCell';
 import { gradeCellTarget, noPinnedRows, pinnedOn, pinRow, type PinnedRows } from './inlineGrade';
 import { PreviewModal } from './PreviewModal';
-import { useAutograde } from './useAutograde';
+import { useAutograde, type AutogradeOneTarget } from './useAutograde';
 
 type Filter = 'all' | 'to-grade' | 'missing';
 
@@ -130,6 +131,8 @@ function Overview({ data }: { data: AssignmentResponse }) {
           : null,
     };
   }, [rows, assignment.points]);
+  // Autograding everything and one student's work never run at once, so they never write the same work together.
+  const autogradeAllBlocked = autogradeAllBlocker(stats.handedIn, autograde.activity);
 
   const visibleRows = rows.filter((r) => matchesFilter(r, filter) || pinnedHere.ids.has(r.student.id));
   const keepRow = (studentId: number) => setPinned((prev) => pinRow(prev, filter, studentId));
@@ -204,13 +207,13 @@ function Overview({ data }: { data: AssignmentResponse }) {
                   Stop autograding
                 </Button>
               ) : (
-                <Tooltip label="Nothing has been handed in yet." disabled={stats.handedIn > 0}>
+                <Tooltip label={autogradeAllBlocked} disabled={!autogradeAllBlocked}>
                   <Button
                     leftSection={<IconRobot size={18} />}
-                    data-disabled={stats.handedIn === 0 || undefined}
-                    aria-disabled={stats.handedIn === 0}
+                    data-disabled={autogradeAllBlocked !== null || undefined}
+                    aria-disabled={autogradeAllBlocked !== null}
                     onClick={(e) => {
-                      if (stats.handedIn === 0) {
+                      if (autogradeAllBlocked) {
                         e.preventDefault();
                         return;
                       }
@@ -335,7 +338,12 @@ function Overview({ data }: { data: AssignmentResponse }) {
                 </div>
               </Group>
             ) : (
-              <SubmissionsTable rows={visibleRows} assignment={assignment} onGrade={keepRow} />
+              <SubmissionsTable
+                rows={visibleRows}
+                assignment={assignment}
+                onGrade={keepRow}
+                autograde={method ? { activity: autograde.activity, start: (target) => void autograde.autogradeOne(target) } : null}
+              />
             )
           }
         </QueryState>
@@ -377,11 +385,14 @@ function SubmissionsTable({
   rows,
   assignment,
   onGrade,
+  autograde,
 }: {
   rows: SubmissionRow[];
   assignment: Assignment;
   /** The teacher started on this student's grade inline. */
   onGrade: (studentId: number) => void;
+  /** Autograding one student's work from their row; null when autograde has nothing to check for this assignment. */
+  autograde: { activity: AutogradeActivity | null; start: (target: AutogradeOneTarget) => void } | null;
 }) {
   const navigate = useNavigate();
   const inputs = useRef(new Map<number, HTMLInputElement>());
@@ -417,6 +428,7 @@ function SubmissionsTable({
             // The accessible name starts with the visible word so voice control ("click Grade") finds it.
             const action = submission.status === 'submitted' ? 'Grade' : 'Open';
             const isHandedIn = submission.status === 'submitted' || submission.status === 'graded';
+            const autograding = autograde?.activity?.kind === 'one' && autograde.activity.studentId === student.id;
             return (
               <Table.Tr
                 key={student.id}
@@ -461,19 +473,30 @@ function SubmissionsTable({
                   }}
                   onMove={(key, input) => move(student.id, key, input)}
                   onEdit={() => onGrade(student.id)}
+                  busy={autograding}
                 />
                 <Table.Td ta="right">
-                  <Button
-                    component={Link}
-                    to={to}
-                    variant="subtle"
-                    size="xs"
-                    rightSection={<IconChevronRight size={14} />}
-                    onClick={(e) => e.stopPropagation()}
-                    aria-label={`${action} ${student.name}'s work`}
-                  >
-                    {action}
-                  </Button>
+                  <Group gap={4} justify="flex-end" wrap="nowrap">
+                    <Button
+                      component={Link}
+                      to={to}
+                      variant="subtle"
+                      size="xs"
+                      rightSection={<IconChevronRight size={14} />}
+                      onClick={(e) => e.stopPropagation()}
+                      aria-label={`${action} ${student.name}'s work`}
+                    >
+                      {action}
+                    </Button>
+                    {autograde && (
+                      <RowActions
+                        student={student}
+                        busy={autograding}
+                        autogradeBlocked={autogradeOneBlocker(submission, autograde.activity)}
+                        onAutograde={() => autograde.start({ student, submission })}
+                      />
+                    )}
+                  </Group>
                 </Table.Td>
               </Table.Tr>
             );
@@ -481,5 +504,45 @@ function SubmissionsTable({
         </Table.Tbody>
       </Table>
     </Table.ScrollContainer>
+  );
+}
+
+/** A row's actions menu: Autograde this student's work (disabled with the reason when it can't be). */
+function RowActions({
+  student,
+  busy,
+  autogradeBlocked,
+  onAutograde,
+}: {
+  student: { name: string };
+  /** This student's work is being autograded. */
+  busy: boolean;
+  autogradeBlocked: string | null;
+  onAutograde: () => void;
+}) {
+  return (
+    // The row opens the student's work on click; nothing in the menu may (React passes the dropdown's clicks up
+    // through the portal to here too).
+    <Box onClick={(event) => event.stopPropagation()}>
+      <Menu position="bottom-end" withinPortal width={260}>
+        <Menu.Target>
+          <Tooltip label="More actions">
+            <ActionIcon variant="subtle" color="gray" loading={busy} aria-label={`Actions for ${student.name}`}>
+              <IconDots size={18} />
+            </ActionIcon>
+          </Tooltip>
+        </Menu.Target>
+        <Menu.Dropdown>
+          <Menu.Item leftSection={<IconRobot size={16} />} disabled={autogradeBlocked !== null} onClick={onAutograde}>
+            Autograde
+            {autogradeBlocked && (
+              <Text size="xs" c="dimmed">
+                {autogradeBlocked}
+              </Text>
+            )}
+          </Menu.Item>
+        </Menu.Dropdown>
+      </Menu>
+    </Box>
   );
 }

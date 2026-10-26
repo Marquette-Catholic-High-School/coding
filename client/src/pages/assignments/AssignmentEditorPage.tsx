@@ -24,6 +24,7 @@ import { Link, useBeforeUnload, useBlocker, useNavigate, useParams } from 'react
 import { useAssignment, useCreateAssignment, useUpdateAssignment } from '../../api/assignments';
 import { useClass } from '../../api/classes';
 import { fieldErrors } from '../../api/client';
+import { isAccountSwitch } from '../../auth/session';
 import { useLanguages } from '../../api/languages';
 import classes from '../../components/cards.module.css';
 import { LanguageIcon } from '../../components/LanguageIcon';
@@ -134,7 +135,10 @@ function AssignmentEditor({ cls, languages, existing }: { cls: ClassSummary; lan
   const leavingRef = useRef(false);
   const getValues = form.getValues;
   const isDirty = useCallback(() => !leavingRef.current && fingerprint(getValues()) !== savedRef.current, [getValues]);
-  const blocker = useBlocker(({ currentLocation, nextLocation }) => currentLocation.pathname !== nextLocation.pathname && isDirty());
+  const blocker = useBlocker(
+    ({ currentLocation, nextLocation }) =>
+      currentLocation.pathname !== nextLocation.pathname && !isAccountSwitch(nextLocation) && isDirty(),
+  );
   useBeforeUnload(
     useCallback(
       (event: BeforeUnloadEvent) => {

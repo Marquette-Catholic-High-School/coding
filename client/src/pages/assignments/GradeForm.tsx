@@ -13,18 +13,22 @@ import {
   Stack,
   Text,
   Textarea,
+  Tooltip,
 } from '@mantine/core';
 import { useForm } from '@mantine/form';
 import { modals } from '@mantine/modals';
-import { IconAlertTriangle, IconArrowBackUp, IconCheck, IconDeviceFloppy, IconMathFunction } from '@tabler/icons-react';
-import { useCallback, useRef, useState, type ReactNode } from 'react';
+import { IconAlertTriangle, IconArrowBackUp, IconCheck, IconDeviceFloppy, IconMathFunction, IconRobot } from '@tabler/icons-react';
+import { useCallback, useEffect, useRef, useState, type MutableRefObject, type ReactNode } from 'react';
 import { useBlocker } from 'react-router';
-import { useGradeSubmission } from '../../api/assignments';
+import { useGradeSubmission, useSubmissionDetail } from '../../api/assignments';
 import { fieldErrors } from '../../api/client';
+import { isAccountSwitch } from '../../auth/session';
 import { LateBadge, scoreColor, ScoreText, SolutionMatchBadge, SubmissionStatusBadge } from '../../components/badges';
 import { notifyError, notifySuccess } from '../../components/notify';
 import { RelativeTime } from '../../components/RelativeTime';
+import { autogradeMethod, autogradeOneBlocker } from './autograde';
 import { autoScoreView } from './autoScoreView';
+import { useAutograde } from './useAutograde';
 
 interface GradeValues {
   /** NumberInput yields '' while empty. */
@@ -45,13 +49,17 @@ function InfoRow({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
-/** Side card of the grading page: who, status, auto score, grade + feedback, save / return for revision. Saving here is a hand grade. */
+/**
+ * Side card of the grading page: who, status, auto score (with Autograde for this work), grade + feedback, save /
+ * return for revision. Saving here is a hand grade.
+ */
 export function GradeForm({
   assignment,
   student,
   submission,
   rerunResults,
   onResultsSaved,
+  hasUnsavedRef,
 }: {
   assignment: Assignment;
   student: { id: number; name: string; username: string };
@@ -59,9 +67,16 @@ export function GradeForm({
   /** Results of tests the teacher re-ran in the workspace (not saved yet), or null. */
   rerunResults: TestResult[] | null;
   onResultsSaved: () => void;
+  /** Set to a check for a grade or feedback typed here but not saved (e.g. to warn before "View as student"). */
+  hasUnsavedRef?: MutableRefObject<() => boolean>;
 }) {
   const mutation = useGradeSubmission(assignment.id);
   const [pending, setPending] = useState<'grade' | 'return' | 'results' | null>(null);
+  // The grading page loaded the language with the work; this reads it from the same (cached) query.
+  const language = useSubmissionDetail(assignment.id, student.id).data?.language ?? null;
+  const method = language ? autogradeMethod(language.kind, assignment) : null;
+  const autograde = useAutograde(assignment, language, method);
+  const autograding = autograde.activity !== null;
   const handedIn = submission.status === 'submitted' || submission.status === 'graded';
   // Not-started work shows the starter code, which isn't the student's.
   const matchesYourSolution = submission.status !== 'not_started' && matchesSolution(submission.code, assignment.solutionCode);
@@ -79,12 +94,19 @@ export function GradeForm({
   });
 
   // Guard against losing a typed grade or feedback when moving to another student.
-  const savedRef = useRef(JSON.stringify(form.getValues()));
+  const savedRef = useRef<GradeValues>({ ...form.getValues() });
   const getValues = form.getValues;
-  const isDirty = useCallback(() => JSON.stringify(getValues()) !== savedRef.current, [getValues]);
-  const blocker = useBlocker(({ currentLocation, nextLocation }) => currentLocation.pathname !== nextLocation.pathname && isDirty());
-  const markSaved = () => {
-    savedRef.current = JSON.stringify(form.getValues());
+  const isDirty = useCallback(() => JSON.stringify(getValues()) !== JSON.stringify(savedRef.current), [getValues]);
+  // Not when switching accounts ("View as student"): that has already happened, and its confirm warned about this.
+  const blocker = useBlocker(
+    ({ currentLocation, nextLocation }) =>
+      currentLocation.pathname !== nextLocation.pathname && !isAccountSwitch(nextLocation) && isDirty(),
+  );
+  useEffect(() => {
+    if (hasUnsavedRef) hasUnsavedRef.current = isDirty;
+  }, [hasUnsavedRef, isDirty]);
+  const markSaved = (values: GradeValues = form.getValues()) => {
+    savedRef.current = { ...values };
   };
 
   const auto = autoScoreView({
@@ -173,6 +195,46 @@ export function GradeForm({
     form.clearFieldError('grade');
   };
 
+  // Autograde this work on its own: it replaces the grade (after confirming one the teacher entered or has typed).
+  const autogradeBlocked = autograding ? null : autogradeOneBlocker(submission, null);
+  const runAutograde = async () => {
+    const unsavedGrade = String(form.getValues().grade) !== String(savedRef.current.grade);
+    const step = await autograde.autogradeOne({ student, submission }, { unsavedGrade });
+    if (!step?.saved) return;
+    // It stored fresh results of every test, so an unsaved re-run here is out of date.
+    if (step.result.testResults) onResultsSaved();
+    if (step.outcome === 'graded' || step.outcome === 'cleared') {
+      // Show the saved grade, and count it as saved. Autograde doesn't change feedback, so the feedback last saved
+      // from this form stays the baseline (feedback typed since stays unsaved).
+      const grade = step.saved.grade ?? '';
+      form.setFieldValue('grade', grade);
+      form.clearFieldError('grade');
+      markSaved({ ...savedRef.current, grade });
+    }
+  };
+  const autogradeButton = method && (
+    <Tooltip label={autogradeBlocked} disabled={!autogradeBlocked} multiline maw={260}>
+      <Button
+        size="xs"
+        variant="light"
+        leftSection={<IconRobot size={16} />}
+        loading={autograding}
+        disabled={pending !== null}
+        data-disabled={autogradeBlocked !== null || undefined}
+        aria-disabled={autogradeBlocked !== null}
+        onClick={(e) => {
+          if (autogradeBlocked) {
+            e.preventDefault();
+            return;
+          }
+          void runAutograde();
+        }}
+      >
+        Autograde
+      </Button>
+    </Tooltip>
+  );
+
   return (
     <Card>
       <Group gap="sm" wrap="nowrap">
@@ -226,10 +288,13 @@ export function GradeForm({
         Auto score
       </Text>
       {auto.empty ? (
-        <Text size="sm" c="dimmed">
-          This assignment has no tests, so there's no auto score
-          {assignment.hasSolution ? '. Autograde can still give full marks to work that matches your solution.' : '.'}
-        </Text>
+        <Stack gap="xs" align="flex-start">
+          <Text size="sm" c="dimmed">
+            This assignment has no tests, so there's no auto score
+            {assignment.hasSolution ? '. Autograde can still give full marks to work that matches your solution.' : '.'}
+          </Text>
+          {autogradeButton}
+        </Stack>
       ) : (
         <Group gap="md" wrap="nowrap" align="center">
           <RingProgress
@@ -251,11 +316,25 @@ export function GradeForm({
               </Text>
             ))}
             <Group gap="xs" mt={4}>
-              <Button size="xs" variant="light" leftSection={<IconMathFunction size={16} />} onClick={applyAutoScore} disabled={autoScore == null}>
+              {autogradeButton}
+              <Button
+                size="xs"
+                variant="light"
+                leftSection={<IconMathFunction size={16} />}
+                onClick={applyAutoScore}
+                disabled={autoScore == null || autograding}
+              >
                 Use auto-score
               </Button>
               {rerunResults && (
-                <Button size="xs" variant="default" leftSection={<IconDeviceFloppy size={16} />} loading={pending === 'results'} onClick={() => void saveResults()}>
+                <Button
+                  size="xs"
+                  variant="default"
+                  leftSection={<IconDeviceFloppy size={16} />}
+                  loading={pending === 'results'}
+                  disabled={autograding}
+                  onClick={() => void saveResults()}
+                >
                   Save test results
                 </Button>
               )}
@@ -284,6 +363,8 @@ export function GradeForm({
             }
             rightSectionWidth={64}
             rightSectionPointerEvents="none"
+            // Autograde sets the grade when it finishes.
+            readOnly={autograding}
             key={form.key('grade')}
             {...form.getInputProps('grade')}
           />
@@ -298,7 +379,13 @@ export function GradeForm({
             {...form.getInputProps('feedback')}
           />
           <Stack gap="xs">
-            <Button type="submit" fullWidth leftSection={<IconCheck size={18} />} loading={pending === 'grade'} disabled={pending !== null && pending !== 'grade'}>
+            <Button
+              type="submit"
+              fullWidth
+              leftSection={<IconCheck size={18} />}
+              loading={pending === 'grade'}
+              disabled={autograding || (pending !== null && pending !== 'grade')}
+            >
               Save grade
             </Button>
             <Button
@@ -307,7 +394,7 @@ export function GradeForm({
               leftSection={<IconArrowBackUp size={18} />}
               onClick={confirmReturn}
               loading={pending === 'return'}
-              disabled={!handedIn || (pending !== null && pending !== 'return')}
+              disabled={!handedIn || autograding || (pending !== null && pending !== 'return')}
             >
               Return for revision
             </Button>

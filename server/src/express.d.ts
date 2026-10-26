@@ -6,6 +6,8 @@ declare global {
     interface Request {
       /** Set by the `loadUser` middleware when the session cookie is valid. */
       user?: User;
+      /** Set by `loadUser` with `user` when a teacher or admin is signed in as that student. */
+      impersonator?: User;
     }
   }
 }

@@ -22,6 +22,7 @@ import { useDisclosure } from '@mantine/hooks';
 import { APP_NAME } from '@codeclass/shared';
 import {
   IconAlertTriangle,
+  IconArrowBackUp,
   IconChevronDown,
   IconCode,
   IconLayoutDashboard,
@@ -37,7 +38,8 @@ import {
 import { useEffect } from 'react';
 import { Link, Outlet, useLocation, useNavigate, useNavigationType } from 'react-router';
 import { useClasses } from '../api/classes';
-import { isStaff, useCurrentUser, useSignOut } from '../auth/AuthProvider';
+import { isStaff, useAuth, useCurrentUser, useSignOut } from '../auth/AuthProvider';
+import { StudentViewBanner, useBackToMyAccount, type BackToMyAccount } from '../auth/StudentViewBanner';
 import { RoleBadge } from '../components/badges';
 import { BrandMark } from '../components/BrandMark';
 
@@ -54,7 +56,7 @@ function ColorSchemeToggle() {
   );
 }
 
-function AccountMenu() {
+function AccountMenu({ back }: { back: BackToMyAccount | null }) {
   const user = useCurrentUser();
   const signOut = useSignOut();
   const navigate = useNavigate();
@@ -68,8 +70,8 @@ function AccountMenu() {
               <Text size="sm" fw={600} lh={1.2}>
                 {user.name}
               </Text>
-              <Text size="xs" c="dimmed" tt="capitalize">
-                {user.role}
+              <Text size="xs" c="dimmed" tt={back ? undefined : 'capitalize'}>
+                {back ? 'Student view' : user.role}
               </Text>
             </Stack>
             <IconChevronDown size={14} />
@@ -85,15 +87,22 @@ function AccountMenu() {
           Playground
         </Menu.Item>
         <Menu.Divider />
-        <Menu.Item
-          color="red"
-          leftSection={<IconLogout size={16} />}
-          onClick={async () => {
-            if (await signOut()) navigate('/login', { replace: true });
-          }}
-        >
-          Sign out
-        </Menu.Item>
+        {back ? (
+          // Signing out of a student view goes back to the teacher's or admin's own account.
+          <Menu.Item leftSection={<IconArrowBackUp size={16} />} onClick={back.run}>
+            Back to my account
+          </Menu.Item>
+        ) : (
+          <Menu.Item
+            color="red"
+            leftSection={<IconLogout size={16} />}
+            onClick={async () => {
+              if (await signOut()) navigate('/login', { replace: true });
+            }}
+          >
+            Sign out
+          </Menu.Item>
+        )}
       </Menu.Dropdown>
     </Menu>
   );
@@ -150,6 +159,9 @@ function ClassLinks() {
 export function AppLayout() {
   const [opened, { toggle, close }] = useDisclosure();
   const user = useCurrentUser();
+  const { impersonator } = useAuth();
+  const backToMyAccount = useBackToMyAccount();
+  const back = impersonator ? backToMyAccount : null;
   const { pathname } = useLocation();
   const navigationType = useNavigationType();
   const staff = isStaff(user);
@@ -179,7 +191,7 @@ export function AppLayout() {
           </Group>
           <Group gap="sm" wrap="nowrap">
             <ColorSchemeToggle />
-            <AccountMenu />
+            <AccountMenu back={back} />
           </Group>
         </Group>
       </AppShell.Header>
@@ -220,7 +232,9 @@ export function AppLayout() {
       </AppShell.Navbar>
 
       <AppShell.Main>
-        {user.mustChangePassword && pathname !== '/account' && (
+        {back && <StudentViewBanner user={user} back={back} />}
+        {/* A teacher or admin in a student view isn't the one who should choose the student's password. */}
+        {user.mustChangePassword && !back && pathname !== '/account' && (
           <Alert color="yellow" mb="lg" icon={<IconAlertTriangle />} title="You're using a temporary password">
             <Text size="sm">
               Please{' '}

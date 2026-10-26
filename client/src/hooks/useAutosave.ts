@@ -130,6 +130,39 @@ export class AutosaveQueue<T> {
   }
 }
 
+/** What flushAutosaves/cancelAutosaves need from a queue. */
+interface TrackedQueue {
+  flush(): Promise<void>;
+  cancel(): void;
+}
+
+/** The queues of the autosaving editors on the page. */
+const trackedQueues = new Set<TrackedQueue>();
+
+/** Includes `queue` in flushAutosaves and cancelAutosaves until the returned function is called. */
+export function trackAutosave(queue: TrackedQueue): () => void {
+  trackedQueues.add(queue);
+  return () => {
+    trackedQueues.delete(queue);
+  };
+}
+
+/**
+ * Saves what every autosaving editor on the page still holds and waits until all of it is saved, e.g. before this tab
+ * switches accounts (afterwards the saves would go to the wrong account or be refused). Rejects with the first error
+ * once every save has finished.
+ */
+export async function flushAutosaves(): Promise<void> {
+  const results = await Promise.allSettled([...trackedQueues].map((queue) => queue.flush()));
+  const failed = results.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+  if (failed) throw failed.reason;
+}
+
+/** Forgets what every autosaving editor still holds: the account it belongs to is no longer the one in this tab. */
+export function cancelAutosaves(): void {
+  for (const queue of trackedQueues) queue.cancel();
+}
+
 export interface AutosaveOptions<T> {
   save: (value: T) => Promise<unknown>;
   /** Debounce after the last change. Default 1500 ms. */
@@ -164,6 +197,7 @@ export function useAutosave<T>({ save, delayMs = 1500, enabled = true, initialSa
     queue.options = { save, delayMs, onError };
   });
   useEffect(() => queue.subscribe(setState), [queue]);
+  useEffect(() => trackAutosave(queue), [queue]);
 
   // Became read-only (e.g. the due date passed): save what was typed before it locked.
   useEffect(() => {

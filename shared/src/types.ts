@@ -15,6 +15,14 @@ export interface User {
   createdAt: string;
 }
 
+/** The teacher or admin using a student's account through "Sign in as student" (the student view shows who). */
+export interface Impersonator {
+  id: number;
+  name: string;
+  username: string;
+  role: Role;
+}
+
 /** Admin user list row. */
 export interface UserWithStats extends User {
   classCount: number;

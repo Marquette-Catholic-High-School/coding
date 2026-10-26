@@ -13,6 +13,7 @@ import type {
   ClassInvite,
   ClassSummary,
   Dashboard,
+  Impersonator,
   InviteImportRow,
   InviteOutcome,
   Language,
@@ -33,6 +34,8 @@ export interface ApiErrorBody {
     /**
      * Machine-readable reason, when the client must react to it. `csrf`: the request lacked the session's
      * `x-codeclass-token` (read from the `cc_csrf` cookie); the response re-sets that cookie and the client retries once.
+     * `account-changed` (409): the `x-codeclass-user` the tab sent isn't the signed-in user — another tab switched
+     * accounts — so nothing was done.
      */
     code?: string;
   };
@@ -116,12 +119,27 @@ export const updateProfileSchema = z.object({
 });
 export type UpdateProfileInput = z.input<typeof updateProfileSchema>;
 
-/** GET /api/auth/me (401 when signed out), POST /api/setup, /login, /register, PATCH /profile */
+/** GET /api/auth/me (401 when signed out), POST /api/setup, /login, /register, PATCH /profile, /impersonate, /stop-impersonating */
 export interface UserResponse {
   user: User;
   /** Register / profile update: classes just joined through email invitations or the class code. */
   joinedClasses?: { id: number; name: string }[];
+  /** `user` is a student whose account a teacher or admin is using ("Sign in as student"); null otherwise. */
+  impersonator?: Impersonator | null;
 }
+
+/**
+ * POST /api/auth/impersonate → UserResponse (the student, with `impersonator`). Staff only: admins may sign in as any
+ * student, teachers only as students enrolled in a class they own. Not from a session that is already impersonating.
+ */
+export const impersonateSchema = z.object({ userId: z.number().int().positive() });
+export type ImpersonateInput = z.input<typeof impersonateSchema>;
+
+/**
+ * POST /api/auth/logout. Signing out of a student's account that a teacher or admin is using goes back to that
+ * teacher's or admin's own account instead (`user` is set; same as POST /api/auth/stop-impersonating).
+ */
+export interface LogoutResponse { ok: true; user?: User }
 
 /** GET /api/join/:code — public preview for the join page. 404 when the code is unknown. */
 export interface JoinPreviewResponse { className: string; teacherName: string; joinEnabled: boolean }

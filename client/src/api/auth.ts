@@ -1,5 +1,6 @@
 import type {
   ChangePasswordInput,
+  ImpersonateInput,
   JoinPreviewResponse,
   LoginInput,
   OkResponse,
@@ -10,8 +11,17 @@ import type {
   UserResponse,
 } from '@codeclass/shared';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useLocation, useNavigate } from 'react-router';
 import { useAuth } from '../auth/AuthProvider';
-import { api, queryKeys } from './client';
+import {
+  ACCOUNT_SWITCH_KEY,
+  ACCOUNT_SWITCH_STATE,
+  rememberReturnPath,
+  settleBeforeSwitch,
+  takeReturnPath,
+  type Session,
+} from '../auth/session';
+import { AccountChangedError, api, ApiError, queryKeys } from './client';
 
 export function useSetupStatus() {
   return useQuery({ queryKey: queryKeys.setup, queryFn: () => api.get<SetupStatusResponse>('/setup'), staleTime: 0 });
@@ -71,6 +81,67 @@ export function useUpdateProfile() {
         void qc.invalidateQueries({ queryKey: queryKeys.classes.all });
         void qc.invalidateQueries({ queryKey: queryKeys.dashboard });
       }
+    },
+  });
+}
+
+/**
+ * "Sign in as student": a teacher or admin switches into a student's account (admins: any student; teachers: students
+ * whose classes are all theirs), then opens `to` (default: the dashboard) as them. The page they started from is
+ * remembered for "Back to my account". Leaving it isn't blocked by unsaved-changes guards: the confirm says what's lost.
+ */
+export function useImpersonate() {
+  const { switchAccount } = useAuth();
+  const qc = useQueryClient();
+  const navigate = useNavigate();
+  const { pathname, search } = useLocation();
+  return useMutation({
+    mutationKey: ACCOUNT_SWITCH_KEY,
+    mutationFn: async ({ userId }: ImpersonateInput & { to?: string }) => {
+      await settleBeforeSwitch(qc);
+      return api.post<UserResponse>('/auth/impersonate', { userId });
+    },
+    onSuccess: ({ user, impersonator }, { to }) => {
+      if (impersonator) rememberReturnPath(impersonator.id, pathname + search);
+      switchAccount(user, impersonator ?? null);
+      navigate(to ?? '/dashboard', { replace: true, state: ACCOUNT_SWITCH_STATE });
+    },
+  });
+}
+
+/**
+ * "Back to my account": saves the student's latest edits while still signed in as them, ends the student view and
+ * returns to the teacher's or admin's own account and the page they left.
+ */
+export function useStopImpersonating() {
+  const { switchAccount, forgetSession } = useAuth();
+  const qc = useQueryClient();
+  const navigate = useNavigate();
+  return useMutation({
+    mutationKey: ACCOUNT_SWITCH_KEY,
+    mutationFn: async () => {
+      await settleBeforeSwitch(qc);
+      try {
+        return await api.post<UserResponse>('/auth/stop-impersonating');
+      } catch (err) {
+        // This tab was behind: another tab already went back. Catch up if the browser is in the staff member's own account.
+        if (err instanceof AccountChangedError || (err instanceof ApiError && err.status === 400)) {
+          const shown = qc.getQueryData<Session | null>(queryKeys.me);
+          const now = await api.get<UserResponse>('/auth/me');
+          if (!now.impersonator && now.user.id === shown?.impersonator?.id) return now;
+        }
+        throw err;
+      }
+    },
+    onSuccess: ({ user }) => {
+      const back = takeReturnPath(user.id) ?? '/dashboard';
+      switchAccount(user, null);
+      navigate(back, { replace: true, state: ACCOUNT_SWITCH_STATE });
+    },
+    onError: (err) => {
+      // Their own account can't be used any more (deleted, no longer a teacher or admin, or its session would have
+      // ended), or the student view expired: the server has ended the session, so show the sign-in page.
+      if (err instanceof ApiError && err.status === 401) forgetSession();
     },
   });
 }

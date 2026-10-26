@@ -19,6 +19,8 @@ export const unauthorized = (message = 'Please sign in') => new HttpError(401, m
 export const forbidden = (message = "You don't have access to this") => new HttpError(403, message);
 export const notFound = (message = 'Not found') => new HttpError(404, message);
 export const conflict = (message: string, fieldErrors?: Record<string, string>) => new HttpError(409, message, fieldErrors);
+/** A call with a session but without its anti-CSRF token (see `requireCsrfToken` in app.ts). */
+export const csrfRefused = () => new HttpError(403, 'Your session needs refreshing — reload the page.', undefined, 'csrf');
 
 /** Validates a request body; throws a 400 with per-field messages (keys = top-level field names). */
 export function parseBody<S extends z.ZodType>(schema: S, body: unknown): z.output<S> {

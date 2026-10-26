@@ -37,7 +37,13 @@ JavaScript, Python and a *Classroom Pseudocode* language.
    student list, or open a student's work to read it and leave feedback. **Autograde** grades handed-in work for
    you: work that matches your solution gets full marks, other work scores the share of tests it passes (hidden
    ones included), and with no tests, work that prints the same as your solution gets full marks. It updates the
-   grades it set before and keeps the ones you typed yourself unless you choose to replace them.
+   grades it set before and keeps the ones you typed yourself unless you choose to replace them. To autograde one
+   student, use **Autograde** in their row's **⋯** menu or on their grading page.
+6. **Sign in as student** (a student's **⋯** menu on the class **Students** tab or the **Users** page, or **View as
+   student** on their grading page) shows CodeClass exactly as that student sees it, and anything you do there is
+   saved as their work. **Back to my account** (in the banner at the top, or the account menu) returns you to your
+   own account without a password. Admins can sign in as any student; teachers as students whose classes are all
+   theirs.
 
 ## Languages
 

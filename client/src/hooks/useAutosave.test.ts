@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { AutosaveQueue } from './useAutosave';
+import { AutosaveQueue, cancelAutosaves, flushAutosaves, trackAutosave } from './useAutosave';
 
 /** A save function whose calls resolve/reject when the test says so. */
 function controlledSave() {
@@ -169,5 +169,69 @@ describe('AutosaveQueue', () => {
     unsubscribe();
     q.cancel();
     expect(seen).toEqual([false, true]);
+  });
+});
+
+describe('flushAutosaves / cancelAutosaves (every editor on the page, e.g. before switching accounts)', () => {
+  it('saves what each tracked editor still holds, before its debounce, and waits for it', async () => {
+    const first = controlledSave();
+    const second = controlledSave();
+    const a = new AutosaveQueue<string>({ save: first.save, delayMs: 1500 });
+    const b = new AutosaveQueue<string>({ save: second.save, delayMs: 1500 });
+    const untrackA = trackAutosave(a);
+    const untrackB = trackAutosave(b);
+    a.update('latest edit');
+    b.update('other editor');
+
+    let done = false;
+    const flushing = flushAutosaves().then(() => {
+      done = true;
+    });
+    expect(first.calls.map((c) => c.value)).toEqual(['latest edit']);
+    expect(second.calls.map((c) => c.value)).toEqual(['other editor']);
+    first.calls[0]!.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(done).toBe(false);
+    second.calls[0]!.resolve();
+    await flushing;
+    expect(a.state.dirty || b.state.dirty).toBe(false);
+
+    // Untracked editors aren't touched.
+    untrackA();
+    untrackB();
+    a.update('after');
+    await flushAutosaves();
+    expect(first.save).toHaveBeenCalledTimes(1);
+    a.cancel();
+  });
+
+  it('rejects with the first failure once every save has finished', async () => {
+    const failing = controlledSave();
+    const fine = controlledSave();
+    const a = new AutosaveQueue<string>({ save: failing.save, delayMs: 100 });
+    const b = new AutosaveQueue<string>({ save: fine.save, delayMs: 100 });
+    const untrack = [trackAutosave(a), trackAutosave(b)];
+    a.update('x');
+    b.update('y');
+    const flushing = flushAutosaves();
+    failing.calls[0]!.reject(new Error('refused'));
+    fine.calls[0]!.resolve();
+    await expect(flushing).rejects.toThrow('refused');
+    expect(b.state.dirty).toBe(false);
+    untrack.forEach((stop) => stop());
+    a.cancel();
+  });
+
+  it("forgets what tracked editors hold, so nothing is saved later as another account's work", async () => {
+    const { save } = controlledSave();
+    const q = new AutosaveQueue<string>({ save, delayMs: 100 });
+    const untrack = trackAutosave(q);
+    q.update('student code');
+    cancelAutosaves();
+    expect(q.state.dirty).toBe(false);
+    q.saveSoon(); // e.g. the editor unmounting after the switch
+    await vi.advanceTimersByTimeAsync(500);
+    expect(save).not.toHaveBeenCalled();
+    untrack();
   });
 });

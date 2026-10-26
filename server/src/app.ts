@@ -3,10 +3,10 @@ import path from 'node:path';
 import cookieParser from 'cookie-parser';
 import express, { type Request, type RequestHandler, type Response } from 'express';
 import { PYODIDE_INDEX_URL } from '@codeclass/shared';
-import { hasCsrfToken, loadUser } from './auth';
+import { hasCsrfToken, loadUser, requireSameAccount } from './auth';
 import { config } from './config';
 import { db } from './db';
-import { errorHandler, HttpError, notFound } from './http';
+import { csrfRefused, errorHandler, HttpError, notFound } from './http';
 import { router as adminUsersRouter } from './routes/adminUsers';
 import { router as assignmentsRouter } from './routes/assignments';
 import { router as authRouter } from './routes/auth';
@@ -48,9 +48,7 @@ const requireCsrfToken: RequestHandler = (req, res, next) => {
   if (req.method !== 'GET' && req.method !== 'HEAD' && req.get('x-codeclass') !== '1') {
     throw new HttpError(403, 'Missing request header');
   }
-  if (req.user && !isSignedOutEndpoint(req) && !hasCsrfToken(req, res)) {
-    throw new HttpError(403, 'Your session needs refreshing — reload the page.', undefined, 'csrf');
-  }
+  if (req.user && !isSignedOutEndpoint(req) && !hasCsrfToken(req, res)) throw csrfRefused();
   next();
 };
 
@@ -90,6 +88,7 @@ export function createApp() {
   api.use(cookieParser());
   api.use(loadUser);
   api.use(requireCsrfToken);
+  api.use(requireSameAccount);
   api.use(setupRouter);
   api.use(authRouter);
   api.use(adminUsersRouter);

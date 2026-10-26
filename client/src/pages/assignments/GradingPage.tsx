@@ -1,9 +1,9 @@
 import type { SubmissionDetailResponse, TestResult } from '@codeclass/shared';
 import { ActionIcon, Alert, Button, Grid, Group, Kbd, Skeleton, Text, Tooltip } from '@mantine/core';
 import { useHotkeys } from '@mantine/hooks';
-import { IconChevronLeft, IconChevronRight, IconInfoCircle, IconList } from '@tabler/icons-react';
+import { IconChevronLeft, IconChevronRight, IconInfoCircle, IconList, IconUserShare } from '@tabler/icons-react';
 import { useQueryClient } from '@tanstack/react-query';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router';
 import { useSubmissionDetail } from '../../api/assignments';
 import { api, queryKeys } from '../../api/client';
@@ -12,6 +12,7 @@ import { NotFoundCard } from '../../components/NotFoundCard';
 import { PageHeader } from '../../components/PageHeader';
 import { QueryState } from '../../components/QueryState';
 import { usePageTitle } from '../../hooks/usePageTitle';
+import { useSignInAsStudent } from '../../hooks/useSignInAsStudent';
 import { CodeWorkspace } from '../../ide';
 import { GradeForm } from './GradeForm';
 
@@ -52,7 +53,9 @@ function GradingView({ data }: { data: SubmissionDetailResponse }) {
   const { assignment, class: cls, language, student, submission, prevStudentId, nextStudentId } = data;
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const signInAs = useSignInAsStudent();
   const [rerunResults, setRerunResults] = useState<TestResult[] | null>(null);
+  const hasUnsavedGrade = useRef<() => boolean>(() => false);
   const handedIn = submission.status === 'submitted' || submission.status === 'graded';
 
   const goTo = (id: number | null) => {
@@ -119,6 +122,20 @@ function GradingView({ data }: { data: SubmissionDetailResponse }) {
             <Button component={Link} to={`/assignments/${assignment.id}`} variant="default" leftSection={<IconList size={18} />}>
               All students
             </Button>
+            <Button
+              variant="default"
+              leftSection={<IconUserShare size={18} />}
+              onClick={() =>
+                signInAs(student, {
+                  to: `/assignments/${assignment.id}`,
+                  warning: hasUnsavedGrade.current()
+                    ? `You haven't saved the grade or feedback you typed for ${student.name}. It will be lost.`
+                    : undefined,
+                })
+              }
+            >
+              View as student
+            </Button>
           </>
         }
       />
@@ -147,6 +164,7 @@ function GradingView({ data }: { data: SubmissionDetailResponse }) {
             submission={submission}
             rerunResults={rerunResults}
             onResultsSaved={() => setRerunResults(null)}
+            hasUnsavedRef={hasUnsavedGrade}
           />
         </Grid.Col>
       </Grid>

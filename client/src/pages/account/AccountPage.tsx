@@ -6,7 +6,7 @@ import dayjs from 'dayjs';
 import { useEffect } from 'react';
 import { useChangePassword, useUpdateProfile } from '../../api/auth';
 import { fieldErrors } from '../../api/client';
-import { useCurrentUser } from '../../auth/AuthProvider';
+import { useAuth, useCurrentUser } from '../../auth/AuthProvider';
 import { RoleBadge } from '../../components/badges';
 import { notifyError, notifySuccess } from '../../components/notify';
 import { PageHeader } from '../../components/PageHeader';
@@ -24,28 +24,37 @@ const validatePassword = withPasswordConfirm(
 export function AccountPage() {
   usePageTitle('Account settings');
   const user = useCurrentUser();
+  // A teacher or admin using this student's account can look but not change it (the server refuses too).
+  const studentView = useAuth().impersonator != null;
 
   return (
     <>
-      <PageHeader title="Account settings" subtitle="Your profile and password." />
-      {user.mustChangePassword && (
+      <PageHeader title="Account settings" subtitle={studentView ? `${user.name}'s profile and password.` : 'Your profile and password.'} />
+      {user.mustChangePassword && !studentView && (
         <Alert color="yellow" variant="light" mb="lg" icon={<IconAlertTriangle />} title="You're using a temporary password">
           <Text size="sm">Choose your own password below so only you can sign in.</Text>
         </Alert>
       )}
       <Grid gap="lg">
         <Grid.Col span={{ base: 12, md: 6 }}>
-          <ProfileCard user={user} />
+          <ProfileCard
+            user={user}
+            lockedReason={studentView ? `You're signed in as ${user.name}. Only they can change their name or email.` : undefined}
+          />
         </Grid.Col>
         <Grid.Col span={{ base: 12, md: 6 }}>
-          <PasswordCard temporary={user.mustChangePassword} />
+          <PasswordCard
+            temporary={user.mustChangePassword}
+            lockedReason={studentView ? `You're signed in as ${user.name}. Only they can change their password.` : undefined}
+          />
         </Grid.Col>
       </Grid>
     </>
   );
 }
 
-function ProfileCard({ user }: { user: User }) {
+/** `lockedReason`: shown instead of letting the profile be edited. */
+function ProfileCard({ user, lockedReason }: { user: User; lockedReason?: string }) {
   const updateProfile = useUpdateProfile();
   const form = useForm({
     mode: 'uncontrolled',
@@ -101,6 +110,11 @@ function ProfileCard({ user }: { user: User }) {
           </Text>
         </Stack>
       </Group>
+      {lockedReason && (
+        <Text size="sm" c="dimmed" mb="md">
+          {lockedReason}
+        </Text>
+      )}
       <form noValidate onSubmit={handleSubmit}>
         <Stack gap="md">
           <TextInput
@@ -110,7 +124,15 @@ function ProfileCard({ user }: { user: User }) {
             readOnly
             leftSection={<IconAt size={16} />}
           />
-          <TextInput label="Name" placeholder="e.g. Sam Patel" required autoComplete="name" key={form.key('name')} {...form.getInputProps('name')} />
+          <TextInput
+            label="Name"
+            placeholder="e.g. Sam Patel"
+            required
+            autoComplete="name"
+            disabled={!!lockedReason}
+            key={form.key('name')}
+            {...form.getInputProps('name')}
+          />
           <TextInput
             label="Email"
             description={
@@ -121,21 +143,44 @@ function ProfileCard({ user }: { user: User }) {
             placeholder="e.g. sam.patel@school.org"
             type="email"
             autoComplete="email"
+            disabled={!!lockedReason}
             key={form.key('email')}
             {...form.getInputProps('email')}
           />
-          <Group justify="flex-end">
-            <Button type="submit" leftSection={<IconDeviceFloppy size={18} />} loading={updateProfile.isPending}>
-              Save profile
-            </Button>
-          </Group>
+          {!lockedReason && (
+            <Group justify="flex-end">
+              <Button type="submit" leftSection={<IconDeviceFloppy size={18} />} loading={updateProfile.isPending}>
+                Save profile
+              </Button>
+            </Group>
+          )}
         </Stack>
       </form>
     </Card>
   );
 }
 
-function PasswordCard({ temporary }: { temporary: boolean }) {
+/** `lockedReason`: shown instead of the change-password form. */
+function PasswordCard({ temporary, lockedReason }: { temporary: boolean; lockedReason?: string }) {
+  return (
+    <Card h="100%">
+      <Group justify="space-between" mb="sm">
+        <Title order={3} fz="h4">
+          Password
+        </Title>
+      </Group>
+      {lockedReason ? (
+        <Text size="sm" c="dimmed">
+          {lockedReason}
+        </Text>
+      ) : (
+        <ChangePasswordForm temporary={temporary} />
+      )}
+    </Card>
+  );
+}
+
+function ChangePasswordForm({ temporary }: { temporary: boolean }) {
   const changePassword = useChangePassword();
   const form = useForm({
     mode: 'uncontrolled',
@@ -158,12 +203,7 @@ function PasswordCard({ temporary }: { temporary: boolean }) {
   });
 
   return (
-    <Card h="100%">
-      <Group justify="space-between" mb="sm">
-        <Title order={3} fz="h4">
-          Password
-        </Title>
-      </Group>
+    <>
       <Text size="sm" c="dimmed" mb="lg">
         Changing your password signs you out everywhere else.
       </Text>
@@ -199,6 +239,6 @@ function PasswordCard({ temporary }: { temporary: boolean }) {
           </Group>
         </Stack>
       </form>
-    </Card>
+    </>
   );
 }

@@ -24,6 +24,7 @@ import {
   IconTrash,
   IconUserCircle,
   IconUserPlus,
+  IconUserShare,
   IconUsers,
 } from '@tabler/icons-react';
 import { useState } from 'react';
@@ -37,6 +38,7 @@ import { QueryState } from '../../components/QueryState';
 import { RelativeTime } from '../../components/RelativeTime';
 import { TemporaryPasswordModal } from '../../components/TemporaryPasswordModal';
 import { usePageTitle } from '../../hooks/usePageTitle';
+import { useSignInAsStudent } from '../../hooks/useSignInAsStudent';
 import { UserFormModal, type Credentials } from './UserFormModal';
 
 type Tab = 'staff' | 'students';
@@ -53,6 +55,7 @@ export function UsersPage() {
   const users = useUsers();
   const resetPassword = useResetUserPassword();
   const deleteUser = useDeleteUser();
+  const signInAs = useSignInAsStudent();
   const [searchParams, setSearchParams] = useSearchParams();
   const tab: Tab = searchParams.get('tab') === 'students' ? 'students' : 'staff';
   const [search, setSearch] = useState('');
@@ -169,7 +172,7 @@ export function UsersPage() {
         {({ users: all }) => {
           const staff = all.filter((u) => u.role !== 'student');
           const students = all.filter((u) => u.role === 'student');
-          const tableProps = { me, search, onEdit: openEdit, onReset: confirmReset, onDelete: confirmDelete };
+          const tableProps = { me, search, onEdit: openEdit, onSignInAs: signInAs, onReset: confirmReset, onDelete: confirmDelete };
           return (
             <Tabs value={tab} onChange={setTab} keepMounted={false}>
               <Tabs.List mb="lg">
@@ -249,6 +252,7 @@ function UsersTable({
   me,
   search,
   onEdit,
+  onSignInAs,
   onReset,
   onDelete,
 }: {
@@ -256,6 +260,7 @@ function UsersTable({
   me: User;
   search: string;
   onEdit: (user: UserWithStats) => void;
+  onSignInAs: (user: UserWithStats) => void;
   onReset: (user: UserWithStats) => void;
   onDelete: (user: UserWithStats) => void;
 }) {
@@ -285,7 +290,15 @@ function UsersTable({
           </Table.Thead>
           <Table.Tbody>
             {rows.map((user) => (
-              <UserRow key={user.id} user={user} isMe={user.id === me.id} onEdit={onEdit} onReset={onReset} onDelete={onDelete} />
+              <UserRow
+                key={user.id}
+                user={user}
+                isMe={user.id === me.id}
+                onEdit={onEdit}
+                onSignInAs={onSignInAs}
+                onReset={onReset}
+                onDelete={onDelete}
+              />
             ))}
           </Table.Tbody>
         </Table>
@@ -304,12 +317,14 @@ function UserRow({
   user,
   isMe,
   onEdit,
+  onSignInAs,
   onReset,
   onDelete,
 }: {
   user: UserWithStats;
   isMe: boolean;
   onEdit: (user: UserWithStats) => void;
+  onSignInAs: (user: UserWithStats) => void;
   onReset: (user: UserWithStats) => void;
   onDelete: (user: UserWithStats) => void;
 }) {
@@ -372,6 +387,11 @@ function UserRow({
             <Menu.Item leftSection={<IconPencil size={16} />} onClick={() => onEdit(user)}>
               Edit
             </Menu.Item>
+            {user.role === 'student' && (
+              <Menu.Item leftSection={<IconUserShare size={16} />} onClick={() => onSignInAs(user)}>
+                Sign in as student
+              </Menu.Item>
+            )}
             {isMe ? (
               <Menu.Item leftSection={<IconUserCircle size={16} />} component={Link} to="/account">
                 Change your password

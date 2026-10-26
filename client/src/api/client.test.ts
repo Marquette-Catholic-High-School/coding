@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { api, ApiError, readCookie } from './client';
+import { AccountChangedError, api, ApiError, queryClient, queryKeys, readCookie, setSessionProblemListener } from './client';
 
 describe('readCookie', () => {
   it('finds a cookie among others', () => {
@@ -71,5 +71,65 @@ describe('api wrapper anti-CSRF token', () => {
     fetchMock.mockResolvedValueOnce(json(403, { error: { message: "You don't have access to this" } }));
     await expect(api.get('/classes/1')).rejects.toBeInstanceOf(ApiError);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('api wrapper: the account this tab shows', () => {
+  const fetchMock = vi.fn<typeof fetch>();
+  const sentHeaders = (call: number) => fetchMock.mock.calls[call]![1]!.headers as Record<string, string>;
+  const problem = vi.fn();
+  const accountChanged = { error: { message: "You're using a different account in another tab", code: 'account-changed' } };
+
+  beforeEach(() => {
+    fetchMock.mockReset();
+    problem.mockReset();
+    vi.stubGlobal('fetch', fetchMock);
+    setSessionProblemListener(problem);
+    queryClient.setQueryData(queryKeys.me, { user: { id: 7 }, impersonator: { id: 1 } });
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    setSessionProblemListener(null);
+    queryClient.clear();
+  });
+
+  it('sends the shown user id on every call but GET /auth/me', async () => {
+    fetchMock.mockImplementation(async () => json(200, { ok: true }));
+    await api.put('/assignments/3/submission', { code: 'x' });
+    await api.get('/auth/me');
+    await api.get('/classes');
+    expect(sentHeaders(0)['x-codeclass-user']).toBe('7');
+    expect(sentHeaders(1)).not.toHaveProperty('x-codeclass-user');
+    expect(sentHeaders(2)['x-codeclass-user']).toBe('7');
+
+    queryClient.setQueryData(queryKeys.me, null); // signed out
+    await api.post('/auth/login', { login: 'a', password: 'b' });
+    expect(sentHeaders(3)).not.toHaveProperty('x-codeclass-user');
+  });
+
+  it("turns the server's account-changed refusal into an AccountChangedError and rechecks the session", async () => {
+    fetchMock.mockResolvedValue(json(409, accountChanged));
+    const err = await api.put('/assignments/3/submission', { code: 'x' }).catch((e: unknown) => e);
+    // Not an ApiError 409, which pages handle as "this work changed" (e.g. by dropping unsaved edits).
+    expect(err).toBeInstanceOf(AccountChangedError);
+    expect(err).not.toBeInstanceOf(ApiError);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(problem).toHaveBeenCalledTimes(1);
+  });
+
+  it('rechecks the session when a call finds it signed out, and leaves other errors alone', async () => {
+    fetchMock.mockResolvedValueOnce(json(401, { error: { message: 'Please sign in' } }));
+    await expect(api.get('/classes')).rejects.toBeInstanceOf(ApiError);
+    expect(problem).toHaveBeenCalledTimes(1);
+
+    fetchMock.mockResolvedValueOnce(json(409, { error: { message: 'Already submitted' } }));
+    await expect(api.post('/assignments/3/submit', {})).rejects.toMatchObject({ status: 409 });
+    expect(problem).toHaveBeenCalledTimes(1);
+
+    // A wrong password while signed out isn't a session problem.
+    queryClient.setQueryData(queryKeys.me, null);
+    fetchMock.mockResolvedValueOnce(json(401, { error: { message: 'Incorrect username or password' } }));
+    await expect(api.post('/auth/login', {})).rejects.toBeInstanceOf(ApiError);
+    expect(problem).toHaveBeenCalledTimes(1);
   });
 });

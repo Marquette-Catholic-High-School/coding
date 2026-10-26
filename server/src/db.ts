@@ -18,6 +18,14 @@ export interface UserRow {
 export interface SessionRow {
   id: string;
   user_id: number;
+  /** The teacher or admin signed in as this student ("sign in as student"); null for a normal session. */
+  impersonator_id: number | null;
+  /**
+   * For a student view: when the teacher's or admin's own session (the one it replaced) would have ended. Going back
+   * to their account restores a session ending then, so going in and back never extends it. Null otherwise, and for
+   * student views started before this column existed.
+   */
+  return_expires_at: string | null;
   created_at: string;
   expires_at: string;
 }
@@ -136,6 +144,8 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE TABLE IF NOT EXISTS sessions (
   id TEXT PRIMARY KEY,
   user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  impersonator_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+  return_expires_at TEXT,
   created_at TEXT NOT NULL DEFAULT ${NOW},
   expires_at TEXT NOT NULL
 );
@@ -271,6 +281,17 @@ export function migrate(db: Database.Database): void {
       db.exec("ALTER TABLE assignments ADD COLUMN solution_code TEXT NOT NULL DEFAULT ''");
       db.exec(`ALTER TABLE assignments ADD COLUMN solution_visibility ${SOLUTION_VISIBILITY_COLUMN}`);
     })();
+  }
+  const sessionColumns = db.prepare('PRAGMA table_info(sessions)').all() as { name: string }[];
+  if (sessionColumns.length > 0) {
+    if (!sessionColumns.some((c) => c.name === 'impersonator_id')) {
+      db.exec('ALTER TABLE sessions ADD COLUMN impersonator_id INTEGER REFERENCES users(id) ON DELETE CASCADE');
+    }
+    if (!sessionColumns.some((c) => c.name === 'return_expires_at')) {
+      db.exec('ALTER TABLE sessions ADD COLUMN return_expires_at TEXT');
+    }
+    // Here rather than in SCHEMA, which runs before that column exists on older databases.
+    db.exec('CREATE INDEX IF NOT EXISTS sessions_impersonator ON sessions(impersonator_id)');
   }
 }
 

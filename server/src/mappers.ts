@@ -7,6 +7,7 @@ import { solutionReleased } from '@codeclass/shared';
 import type {
   Assignment,
   ClassSummary,
+  Impersonator,
   Language,
   LanguageKind,
   Project,
@@ -28,6 +29,11 @@ export function toUser(row: UserRow): User {
     mustChangePassword: row.must_change_password === 1,
     createdAt: row.created_at,
   };
+}
+
+/** The teacher or admin signed in as a student. */
+export function toImpersonator(user: User): Impersonator {
+  return { id: user.id, name: user.name, username: user.username, role: user.role };
 }
 
 // --- Languages --------------------------------------------------------------------------------------

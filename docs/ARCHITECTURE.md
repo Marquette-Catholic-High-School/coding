@@ -247,6 +247,24 @@ CALL, MOD/DIV, LENGTH, `&` concatenation),
   at least one admin must remain), reset password (ends their sessions; not for yourself), delete (not yourself;
   409 for teachers who still own classes). Creating a student with an email, or giving a student (or an account that
   becomes one) a new email, claims that email's invites.
+- **Sign in as student** (`POST /api/auth/impersonate` `{ userId }`, staff): admins may use any student's account;
+  teachers only a student whose classes are all theirs (archived included; the same rule as resetting a password —
+  404 when none is theirs, 403 when the student is also in another teacher's class). Not from a session that is
+  already a student view. The staff session row is replaced by one for the student with `sessions.impersonator_id`
+  and `return_expires_at` (the staff session's expiry), itself expiring at the earlier of that and now + 8 h.
+  `loadUser` sets `req.impersonator` and re-checks the rule on every request: if it no longer holds the view gives
+  access to nothing, but going back still works; an impersonator who was deleted or is no longer staff ends it.
+  `POST /api/auth/stop-impersonating` and `POST /api/auth/logout` from a student view restore the staff session
+  with its original expiry (`LogoutResponse.user`; signed out if that has passed). `GET /auth/me` returns
+  `impersonator`. While impersonating, `change-password` and `profile` → 403. `endOtherSessions` (password changes
+  and resets) also ends student views the user started.
+- **Other tabs**: every client call sends `x-codeclass-user` (the user id the tab shows; not for `GET /auth/me`).
+  `requireSameAccount` answers 409 `error.code: 'account-changed'` when it isn't the session's user, so a tab left on
+  one account can't save into another after a switch elsewhere. The client turns it into `AccountChangedError`,
+  tells other tabs about switches over a BroadcastChannel, and `AccountSync` shows a modal that can't be dismissed
+  until the tab continues as the new account (clearing its cache) or the other tab switches back. Before any switch
+  or sign-out the client flushes pending autosaves (`flushAutosaves`) and waits for requests in flight; navigations
+  caused by a switch pass the unsaved-changes guards.
 - UI: `SetupPage` (redirect to /login when not needed), `LoginPage` (redirect to /setup when needed; honours
   `?next=`; link to /join), `JoinPage` (/join and /join/:code — signed out: code + live class preview, then create
   account with an optional "School email" that also joins classes that invited it; or "My teacher added my email
@@ -256,8 +274,13 @@ CALL, MOD/DIV, LENGTH, `&` concatenation),
   navigation into the class when exactly one was joined, else /dashboard; signed-in student: join directly (with
   `?email=1`, a hint to add the email on the account page); staff: explain they can't join), `AccountPage` (profile,
   password, temp-password alert; saving an email that returns `joinedClasses` shows a notice naming them and
-  `useUpdateProfile` refreshes classes + dashboard), `UsersPage` (tabs by role, table, create/edit/reset/delete, one-time temporary password modal
-  with copy button).
+  `useUpdateProfile` refreshes classes + dashboard; read-only with a reason in a student view), `UsersPage` (tabs by
+  role, table, create/edit/reset/delete, "Sign in as student" on student rows, one-time temporary password modal with
+  copy button). Student view: `StudentViewBanner` above every page (also on /join) — "You're signed in as … Anything
+  you do is saved as their work." + "Back to my account" — the account menu's sign-out reads "Back to my account",
+  and the temporary-password nag is skipped. Entry points (confirm modal, `useSignInAsStudent`): the class Students
+  tab's per-student menu, the Users page, and "View as student" on the grading page (opens the assignment as them;
+  warns about an unsaved grade). Going back returns to the page the view was started from.
 
 ### 7.2 Classes, roster, dashboards
 - `GET /api/classes` (`?archived=1` for archived): teachers see classes they own, admins all; students their enrolled
@@ -369,6 +392,10 @@ CALL, MOD/DIV, LENGTH, `&` concatenation),
   solution; side card with status, late, code matches solution, auto score (`autoScoreView.ts`), "Use auto-score"
   (`gradeFromAutoScore`), grade `NumberInput` out of points (says when autograde set it; saving makes it a hand
   grade), feedback, Save grade, Return for revision, prev/next student).
+- Autograde one student: "Autograde" in each row's actions menu on the assignment page and in the grading page's
+  auto score section. Same scoring as below with every grade replaceable, after a confirm when it would replace a
+  grade the teacher entered (or typed and didn't save); only handed-in work; one autograde run per page at a time
+  (bulk and single never overlap); the result is a notification ("Graded 7.5 / 10 — 3 of 4 tests passed").
 - Autograde (`autograde.ts` pure logic, `useAutograde.tsx` runs it, `AutogradeModal.tsx`): offered when the kind
   supports tests and there are tests, or there is a solution (`autogradeMethod`). The modal explains the rules for
   this assignment and picks the work — waiting to be graded / all handed-in work (default; regrades autograde's own
@@ -471,6 +498,9 @@ CALL, MOD/DIV, LENGTH, `&` concatenation),
   CDN (no other hosts, so nothing can be sent elsewhere), `worker-src`/`child-src 'none'` (no nested workers). The
   policy is a constant (no request headers go into it). Same-origin `/api` calls from a worker fail the token check.
 - Students never receive hidden tests or other students' data. Teachers only manage their own classes (admins all).
+- A student view ("Sign in as student", §7.1) is the student's session: staff endpoints are 403 from it, and it can't
+  change the student's password, name or email. Its cookie is as powerful as the staff session it replaced, because it
+  can go back without a password; it expires within 8 hours and never outlives the staff session.
 - Student code runs only in browsers: Web Workers (no DOM, network APIs replaced, terminated on stop/timeout and
   JavaScript workers after every run; see §5) and a sandboxed iframe without
   `allow-same-origin` for web pages. Teacher-written Markdown is sanitized with DOMPurify.

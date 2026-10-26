@@ -1,5 +1,6 @@
 import { lazy, Suspense, type ComponentType, type LazyExoticComponent } from 'react';
 import { createBrowserRouter, Navigate } from 'react-router';
+import { AccountSync } from './auth/AccountSync';
 import { GuestOnly, RequireAuth, RequireRole } from './auth/guards';
 import { NotFoundCard } from './components/NotFoundCard';
 import { PageLoader } from './components/QueryState';
@@ -53,45 +54,51 @@ function page(Page: LazyExoticComponent<ComponentType>, { fullPage = false } = {
 }
 
 export const router = createBrowserRouter([
+  // Every page, kept in step with the account signed in (other tabs can switch it).
   {
-    element: <GuestOnly />,
-    children: [
-      { path: '/setup', element: page(SetupPage, { fullPage: true }) },
-      { path: '/login', element: page(LoginPage, { fullPage: true }) },
-    ],
-  },
-  // Join works signed out (register) and signed in (student joins another class).
-  { path: '/join', element: page(JoinPage, { fullPage: true }) },
-  { path: '/join/:code', element: page(JoinPage, { fullPage: true }) },
-  {
-    element: <RequireAuth />,
+    element: <AccountSync />,
     children: [
       {
-        element: <AppLayout />,
+        element: <GuestOnly />,
         children: [
-          { index: true, element: <Navigate to="/dashboard" replace /> },
-          { path: '/dashboard', element: page(DashboardPage) },
-          { path: '/classes', element: page(ClassesPage) },
-          { path: '/classes/:classId', element: page(ClassPage) },
+          { path: '/setup', element: page(SetupPage, { fullPage: true }) },
+          { path: '/login', element: page(LoginPage, { fullPage: true }) },
+        ],
+      },
+      // Join works signed out (register) and signed in (student joins another class).
+      { path: '/join', element: page(JoinPage, { fullPage: true }) },
+      { path: '/join/:code', element: page(JoinPage, { fullPage: true }) },
+      {
+        element: <RequireAuth />,
+        children: [
           {
-            element: <RequireRole roles={['teacher', 'admin']} />,
+            element: <AppLayout />,
             children: [
-              { path: '/classes/:classId/assignments/new', element: page(AssignmentEditorPage) },
-              { path: '/assignments/:assignmentId/edit', element: page(AssignmentEditorPage) },
-              { path: '/assignments/:assignmentId/submissions/:studentId', element: page(GradingPage) },
-              { path: '/languages', element: page(LanguagesPage) },
-              { path: '/languages/:languageId', element: page(LanguagePage) },
+              { index: true, element: <Navigate to="/dashboard" replace /> },
+              { path: '/dashboard', element: page(DashboardPage) },
+              { path: '/classes', element: page(ClassesPage) },
+              { path: '/classes/:classId', element: page(ClassPage) },
+              {
+                element: <RequireRole roles={['teacher', 'admin']} />,
+                children: [
+                  { path: '/classes/:classId/assignments/new', element: page(AssignmentEditorPage) },
+                  { path: '/assignments/:assignmentId/edit', element: page(AssignmentEditorPage) },
+                  { path: '/assignments/:assignmentId/submissions/:studentId', element: page(GradingPage) },
+                  { path: '/languages', element: page(LanguagesPage) },
+                  { path: '/languages/:languageId', element: page(LanguagePage) },
+                ],
+              },
+              { path: '/assignments/:assignmentId', element: page(AssignmentPage) },
+              { path: '/playground', element: page(ProjectsPage) },
+              { path: '/playground/:projectId', element: page(ProjectPage) },
+              { path: '/account', element: page(AccountPage) },
+              {
+                element: <RequireRole roles={['admin']} />,
+                children: [{ path: '/admin/users', element: page(UsersPage) }],
+              },
+              { path: '*', element: <NotFoundCard /> },
             ],
           },
-          { path: '/assignments/:assignmentId', element: page(AssignmentPage) },
-          { path: '/playground', element: page(ProjectsPage) },
-          { path: '/playground/:projectId', element: page(ProjectPage) },
-          { path: '/account', element: page(AccountPage) },
-          {
-            element: <RequireRole roles={['admin']} />,
-            children: [{ path: '/admin/users', element: page(UsersPage) }],
-          },
-          { path: '*', element: <NotFoundCard /> },
         ],
       },
     ],

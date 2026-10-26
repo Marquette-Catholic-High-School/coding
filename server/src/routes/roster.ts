@@ -9,7 +9,15 @@ import {
   type TemporaryPasswordResponse,
 } from '@codeclass/shared';
 import { isEnrolled, loadClassForStaff } from '../access';
-import { currentUser, endOtherSessions, generateTemporaryPassword, hashPassword, requireStaff } from '../auth';
+import {
+  currentUser,
+  endOtherSessions,
+  generateTemporaryPassword,
+  hashPassword,
+  inAnotherTeachersClass,
+  requireStaff,
+  teachesStudent,
+} from '../auth';
 import { db, type UserRow } from '../db';
 import { conflict, forbidden, notFound, parseBody, parseId } from '../http';
 import { isLate, toUser } from '../mappers';
@@ -110,20 +118,6 @@ router.get('/classes/:id/students', requireStaff, (req, res) => {
   const body: RosterResponse = { students: rosterStudents(cls.id) };
   res.json(body);
 });
-
-/** True when the student is enrolled in a class that `staffId` owns. */
-function teachesStudent(staffId: number, studentId: number): boolean {
-  return !!db
-    .prepare('SELECT 1 FROM enrollments e JOIN classes c ON c.id = e.class_id WHERE e.user_id = ? AND c.owner_id = ? LIMIT 1')
-    .get(studentId, staffId);
-}
-
-/** True when the student is enrolled in a class that someone other than `staffId` owns. */
-function inAnotherTeachersClass(staffId: number, studentId: number): boolean {
-  return !!db
-    .prepare('SELECT 1 FROM enrollments e JOIN classes c ON c.id = e.class_id WHERE e.user_id = ? AND c.owner_id <> ? LIMIT 1')
-    .get(studentId, staffId);
-}
 
 router.post('/classes/:id/students', requireStaff, (req, res) => {
   const user = currentUser(req);

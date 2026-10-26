@@ -8,6 +8,7 @@ import { useRegister } from '../../api/auth';
 import { useJoinClass } from '../../api/classes';
 import { fieldErrors } from '../../api/client';
 import { useAuth, useSignOut } from '../../auth/AuthProvider';
+import { StudentViewBanner, useBackToMyAccount } from '../../auth/StudentViewBanner';
 import { notifyError, notifySuccess } from '../../components/notify';
 import { PageLoader } from '../../components/QueryState';
 import { ServerUnreachable } from '../../components/ServerUnreachable';
@@ -257,7 +258,20 @@ function RegisterFlow({
 }
 
 function SignedInAs({ user }: { user: User }) {
+  const { impersonator } = useAuth();
   const signOut = useSignOut();
+  const back = useBackToMyAccount();
+  if (impersonator) {
+    // In a student view, signing out goes back to the teacher's or admin's own account: say so.
+    return (
+      <>
+        Student view of {user.name} (@{user.username}).{' '}
+        <Anchor component="button" type="button" fw={600} onClick={back.run} disabled={back.pending}>
+          Back to my account
+        </Anchor>
+      </>
+    );
+  }
   return (
     <>
       Signed in as {user.name} (@{user.username}). Not you?{' '}
@@ -293,6 +307,8 @@ function EmailJoinHint({ user }: { user: User }) {
 
 function StudentJoin({ user, initialCode, emailMode }: { user: User; initialCode: string; emailMode: boolean }) {
   const navigate = useNavigate();
+  const { impersonator } = useAuth();
+  const back = useBackToMyAccount();
   const join = useJoinClass();
   const form = useCodeForm(initialCode);
   const state = useClassCode(form.useWatchValue('joinCode'));
@@ -320,6 +336,8 @@ function StudentJoin({ user, initialCode, emailMode }: { user: User; initialCode
     <AuthCard title="Join a class" subtitle="Enter the class code your teacher gave you." footer={<SignedInAs user={user} />}>
       <form noValidate onSubmit={handleSubmit}>
         <Stack gap="md">
+          {/* This page has no app shell, so it shows the student view's banner itself. */}
+          {impersonator && <StudentViewBanner user={user} back={back} mb={0} />}
           {emailMode && <EmailJoinHint user={user} />}
           <ClassCodeField key={form.key('joinCode')} inputProps={form.getInputProps('joinCode')} state={state} autoFocus={!emailMode} />
           <Button

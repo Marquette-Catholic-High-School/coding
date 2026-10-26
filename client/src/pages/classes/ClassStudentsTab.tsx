@@ -26,6 +26,7 @@ import {
   IconKey,
   IconUserMinus,
   IconUserPlus,
+  IconUserShare,
   IconUsers,
 } from '@tabler/icons-react';
 import { useState } from 'react';
@@ -36,6 +37,7 @@ import { notifySuccess } from '../../components/notify';
 import { QueryState } from '../../components/QueryState';
 import { RelativeTime } from '../../components/RelativeTime';
 import { TemporaryPasswordModal } from '../../components/TemporaryPasswordModal';
+import { useSignInAsStudent } from '../../hooks/useSignInAsStudent';
 import { AddStudentModal } from './AddStudentModal';
 import { confirmAction } from './confirmAction';
 import { ImportStudentsModal } from './ImportStudentsModal';
@@ -86,6 +88,7 @@ export function ClassStudentsTab({ cls }: { cls: ClassSummary }) {
   const roster = useRoster(cls.id);
   const resetPassword = useResetStudentPassword(cls.id);
   const removeStudent = useRemoveStudent(cls.id);
+  const signInAs = useSignInAsStudent();
   const [addOpened, addModal] = useDisclosure(false);
   const [importOpened, importModal] = useDisclosure(false);
   const [credentials, setCredentials] = useState<Credentials | null>(null);
@@ -221,6 +224,9 @@ export function ClassStudentsTab({ cls }: { cls: ClassSummary }) {
                               </Tooltip>
                             </Menu.Target>
                             <Menu.Dropdown>
+                              <Menu.Item leftSection={<IconUserShare size={16} />} onClick={() => signInAs(s)}>
+                                Sign in as student
+                              </Menu.Item>
                               <Menu.Item leftSection={<IconKey size={16} />} onClick={() => confirmReset(s)}>
                                 Reset password
                               </Menu.Item>

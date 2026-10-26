@@ -1,22 +1,40 @@
-// Sign in/out, the current user, student self-registration (class code or invited email), the public join preview,
-// password and profile.
+// Sign in/out, the current user, signing in as a student (teachers and admins), student self-registration (class code
+// or invited email), the public join preview, password and profile.
 
 import crypto from 'node:crypto';
 import { Router, type Request, type Response } from 'express';
 import {
   changePasswordSchema,
+  impersonateSchema,
   loginSchema,
   registerSchema,
   updateProfileSchema,
   type JoinPreviewResponse,
+  type LogoutResponse,
   type OkResponse,
   type UserResponse,
 } from '@codeclass/shared';
-import { currentUser, endOtherSessions, endSession, hashPassword, requireAuth, startSession, verifyPassword } from '../auth';
+import {
+  currentUser,
+  endOtherSessions,
+  endSession,
+  hasCsrfToken,
+  hashPassword,
+  inAnotherTeachersClass,
+  isStaff,
+  requireAuth,
+  startImpersonation,
+  startSession,
+  stopImpersonation,
+  teachesStudent,
+  verifyPassword,
+  wayBack,
+  type WayBack,
+} from '../auth';
 import { db, type ClassRow, type UserRow } from '../db';
-import { badRequest, conflict, HttpError, notFound, parseBody, unauthorized } from '../http';
+import { badRequest, conflict, csrfRefused, forbidden, HttpError, notFound, parseBody, unauthorized } from '../http';
 import { claimInvites, hasPendingInvites, type JoinedClass } from '../invites';
-import { toUser } from '../mappers';
+import { toImpersonator, toUser } from '../mappers';
 import { checkJoinCodeAttempts, FailureLimiter, recordJoinCodeMiss } from '../rateLimit';
 
 export const router = Router();
@@ -69,6 +87,21 @@ function loadUserRow(id: number): UserRow {
   return row;
 }
 
+/**
+ * The way back from the request's student view (see wayBack). When the view no longer reaches the student, the request
+ * has no `req.user` and requireCsrfToken let it through without the anti-CSRF token, so that is checked here.
+ */
+function wayBackFrom(req: Request, res: Response): WayBack | undefined {
+  const back = wayBack(req);
+  if (back && !req.user && !hasCsrfToken(req, res)) throw csrfRefused();
+  return back;
+}
+
+/** A teacher or admin signed in as a student uses their work, not their account details. */
+function refuseWhileImpersonating(req: Request, what: string): void {
+  if (req.impersonator) throw forbidden(`You're signed in as ${currentUser(req).name}. Only they can change ${what}.`);
+}
+
 // --- Routes -----------------------------------------------------------------------------------------
 
 router.post('/auth/login', (req, res) => {
@@ -95,12 +128,60 @@ router.post('/auth/login', (req, res) => {
 });
 
 router.post('/auth/logout', (req, res) => {
+  // Signing out of a student view goes back to the teacher's or admin's own account, unless their own session would
+  // have ended by now (then it just signs out).
+  const back = wayBackFrom(req, res);
+  if (back) {
+    res.json((stopImpersonation(req, res, back) ? { ok: true, user: back.staff } : { ok: true }) satisfies LogoutResponse);
+    return;
+  }
   endSession(req, res);
-  res.json({ ok: true } satisfies OkResponse);
+  res.json({ ok: true } satisfies LogoutResponse);
 });
 
 router.get('/auth/me', requireAuth, (req, res) => {
-  res.json({ user: currentUser(req) } satisfies UserResponse);
+  const impersonator = req.impersonator ? toImpersonator(req.impersonator) : null;
+  res.json({ user: currentUser(req), impersonator } satisfies UserResponse);
+});
+
+router.post('/auth/impersonate', requireAuth, (req, res) => {
+  const me = currentUser(req);
+  if (req.impersonator) throw forbidden(`You're signed in as ${me.name}. Go back to your own account first.`);
+  if (!isStaff(me)) throw forbidden();
+  const input = parseBody(impersonateSchema, req.body);
+
+  const target = db.prepare('SELECT * FROM users WHERE id = ?').get(input.userId) as UserRow | undefined;
+  if (me.role === 'admin') {
+    if (!target) throw notFound("We couldn't find that student");
+    if (target.role !== 'student') {
+      throw forbidden(`${target.name} is ${target.role === 'admin' ? 'an admin' : 'a teacher'}. You can only sign in as a student.`);
+    }
+  } else {
+    // Same answer for accounts outside the teacher's classes as for missing ones.
+    if (!target || target.role !== 'student' || !teachesStudent(me.id, target.id)) {
+      throw notFound("That student isn't in any of your classes");
+    }
+    // Same rule as resetting their password (see canImpersonate).
+    if (inAnotherTeachersClass(me.id, target.id)) {
+      throw forbidden(`${target.name} is also in another teacher's class — ask an admin to sign in as them`);
+    }
+  }
+
+  startImpersonation(req, res, target.id, me.id);
+  res.json({ user: toUser(target), impersonator: toImpersonator(me) } satisfies UserResponse);
+});
+
+router.post('/auth/stop-impersonating', (req, res) => {
+  const back = wayBackFrom(req, res);
+  if (!back) {
+    if (req.user) throw badRequest("You're already using your own account");
+    // Signed out, or a student view whose teacher or admin is no longer staff (loadUser ended it).
+    endSession(req, res);
+    throw unauthorized();
+  }
+  // Their own session would have ended by now: sign in again.
+  if (!stopImpersonation(req, res, back)) throw unauthorized();
+  res.json({ user: back.staff, impersonator: null } satisfies UserResponse);
 });
 
 router.post('/auth/register', (req, res) => {
@@ -180,6 +261,7 @@ router.get('/join/:code', (req, res) => {
 
 router.post('/auth/change-password', requireAuth, (req, res) => {
   const user = currentUser(req);
+  refuseWhileImpersonating(req, 'their password');
   const input = parseBody(changePasswordSchema, req.body);
   const row = loadUserRow(user.id);
 
@@ -200,6 +282,7 @@ router.post('/auth/change-password', requireAuth, (req, res) => {
 
 router.patch('/auth/profile', requireAuth, (req, res) => {
   const user = currentUser(req);
+  refuseWhileImpersonating(req, 'their name or email');
   const input = parseBody(updateProfileSchema, req.body);
   // The schema maps a missing email to null; only clear it when the client actually sent an empty value.
   const email = (req.body as { email?: unknown } | undefined)?.email === undefined ? user.email : input.email;

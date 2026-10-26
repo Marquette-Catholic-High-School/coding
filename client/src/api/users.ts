@@ -4,11 +4,11 @@ import type {
   Role,
   TemporaryPasswordResponse,
   UpdateUserInput,
-  User,
   UserResponse,
   UsersResponse,
 } from '@codeclass/shared';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import type { Session } from '../auth/session';
 import { api, queryKeys } from './client';
 
 export function useUsers(role?: Role) {
@@ -38,7 +38,8 @@ export function useUpdateUser() {
     mutationFn: ({ id, ...input }: UpdateUserInput & { id: number }) => api.patch<UserResponse>(`/admin/users/${id}`, input),
     onSuccess: ({ user }) => {
       // An admin editing their own row: keep the header and Account settings in step.
-      if (qc.getQueryData<User | null>(queryKeys.me)?.id === user.id) qc.setQueryData(queryKeys.me, user);
+      const me = qc.getQueryData<Session | null>(queryKeys.me);
+      if (me?.user.id === user.id) qc.setQueryData<Session>(queryKeys.me, { ...me, user });
       return invalidate();
     },
   });
