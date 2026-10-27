@@ -224,6 +224,21 @@ describe('roster stats', () => {
     expect(byName.Zoe!.joinedAt).toEqual(expect.any(String));
   });
 
+  it("doesn't count work on assignments that were unpublished after it was handed in or graded", async () => {
+    const cls = await createClass(teacherA);
+    const shown = insertAssignment(cls.id, { points: 10, dueAt: iso(-2) });
+    const hidden = insertAssignment(cls.id, { points: 10, dueAt: iso(-2) });
+    const student = insertUser('student', { name: 'Ann' });
+    enroll(cls.id, student.id);
+    insertSubmission(shown, student.id, 'graded', { submittedAt: iso(-3), grade: 4 });
+    insertSubmission(hidden, student.id, 'graded', { submittedAt: iso(-3), grade: 10 });
+    db.prepare('UPDATE assignments SET published = 0 WHERE id = ?').run(hidden);
+
+    const res = await teacherA.get<RosterResponse>(`/classes/${cls.id}/students`);
+    // Like the late count and the PDF reports: only published work (4 / 10), not the draft's 10 / 10.
+    expect(res.body.students[0]).toMatchObject({ submittedCount: 1, lateCount: 0, averagePercent: 40 });
+  });
+
   it('re-adding a removed student brings back their stats', async () => {
     const cls = await createClass(teacherA);
     const task = insertAssignment(cls.id, { points: 10, dueAt: null });

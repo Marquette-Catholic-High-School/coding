@@ -1,6 +1,7 @@
 import { Badge, Button, Tabs, Text } from '@mantine/core';
 import type { ClassSummary } from '@codeclass/shared';
-import { IconClipboardList, IconPlus, IconSettings, IconUsers } from '@tabler/icons-react';
+import { IconClipboardList, IconPlus, IconReportAnalytics, IconSettings, IconUsers } from '@tabler/icons-react';
+import { useState } from 'react';
 import { Link, useSearchParams } from 'react-router';
 import { useClass } from '../../api/classes';
 import { useCurrentUser } from '../../auth/AuthProvider';
@@ -9,6 +10,7 @@ import { CopyIconButton } from '../../components/CopyIconButton';
 import { PageHeader } from '../../components/PageHeader';
 import { QueryState } from '../../components/QueryState';
 import { usePageTitle } from '../../hooks/usePageTitle';
+import { ReportModal, type ReportModalTarget } from '../reports/ReportModal';
 import { ClassAssignmentsTab } from './ClassAssignmentsTab';
 import { ClassSettingsTab } from './ClassSettingsTab';
 import { ClassStudentsTab } from './ClassStudentsTab';
@@ -44,6 +46,7 @@ function ClassView({ cls }: { cls: ClassSummary }) {
   const [params, setParams] = useSearchParams();
   const requested = params.get('tab');
   const tab: Tab = TABS.find((t) => t === requested) ?? 'assignments';
+  const [report, setReport] = useState<ReportModalTarget | null>(null);
 
   const setTab = (next: string | null) =>
     setParams(
@@ -68,6 +71,13 @@ function ClassView({ cls }: { cls: ClassSummary }) {
         actions={
           <>
             {cls.joinCode && <JoinCodeChip code={cls.joinCode} />}
+            <Button
+              variant="default"
+              leftSection={<IconReportAnalytics size={18} />}
+              onClick={() => setReport({ kind: 'class', cls: { id: cls.id, name: cls.name, studentCount: cls.studentCount } })}
+            >
+              Reports
+            </Button>
             <Button component={Link} to={`/classes/${cls.id}/assignments/new`} leftSection={<IconPlus size={18} />}>
               New assignment
             </Button>
@@ -96,6 +106,7 @@ function ClassView({ cls }: { cls: ClassSummary }) {
           <ClassSettingsTab cls={cls} />
         </Tabs.Panel>
       </Tabs>
+      <ReportModal target={report} onClose={() => setReport(null)} />
     </>
   );
 }

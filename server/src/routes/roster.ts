@@ -89,8 +89,12 @@ function rosterStudents(classId: number, onlyStudentId?: number): RosterStudent[
     let submittedCount = 0;
     const percents: number[] = [];
     for (const s of mine.values()) {
+      // Students can't see drafts, so work on one (e.g. an assignment unpublished after grading) doesn't count, as for
+      // late work below and in the PDF reports.
+      const assignment = assignmentById.get(s.assignment_id);
+      if (assignment?.published !== 1) continue;
       if (s.status === 'submitted' || s.status === 'graded') submittedCount += 1;
-      const points = assignmentById.get(s.assignment_id)?.points ?? 0;
+      const { points } = assignment;
       if (s.status === 'graded' && s.grade != null && points > 0) percents.push((s.grade / points) * 100);
     }
     let lateCount = 0;

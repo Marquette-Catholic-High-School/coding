@@ -22,6 +22,7 @@ import {
   IconAlertTriangle,
   IconClockExclamation,
   IconDots,
+  IconFileDownload,
   IconFileSpreadsheet,
   IconKey,
   IconUserMinus,
@@ -38,6 +39,7 @@ import { QueryState } from '../../components/QueryState';
 import { RelativeTime } from '../../components/RelativeTime';
 import { TemporaryPasswordModal } from '../../components/TemporaryPasswordModal';
 import { useSignInAsStudent } from '../../hooks/useSignInAsStudent';
+import { ReportModal, type ReportModalTarget } from '../reports/ReportModal';
 import { AddStudentModal } from './AddStudentModal';
 import { confirmAction } from './confirmAction';
 import { ImportStudentsModal } from './ImportStudentsModal';
@@ -92,6 +94,7 @@ export function ClassStudentsTab({ cls }: { cls: ClassSummary }) {
   const [addOpened, addModal] = useDisclosure(false);
   const [importOpened, importModal] = useDisclosure(false);
   const [credentials, setCredentials] = useState<Credentials | null>(null);
+  const [report, setReport] = useState<ReportModalTarget | null>(null);
 
   const confirmReset = (s: RosterStudent) =>
     confirmAction({
@@ -227,6 +230,12 @@ export function ClassStudentsTab({ cls }: { cls: ClassSummary }) {
                               <Menu.Item leftSection={<IconUserShare size={16} />} onClick={() => signInAs(s)}>
                                 Sign in as student
                               </Menu.Item>
+                              <Menu.Item
+                                leftSection={<IconFileDownload size={16} />}
+                                onClick={() => setReport({ kind: 'student', student: s, cls: { id: cls.id, name: cls.name } })}
+                              >
+                                Download report
+                              </Menu.Item>
                               <Menu.Item leftSection={<IconKey size={16} />} onClick={() => confirmReset(s)}>
                                 Reset password
                               </Menu.Item>
@@ -266,6 +275,7 @@ export function ClassStudentsTab({ cls }: { cls: ClassSummary }) {
         }}
       />
       <TemporaryPasswordModal credentials={credentials} onClose={() => setCredentials(null)} />
+      <ReportModal target={report} onClose={() => setReport(null)} />
     </>
   );
 }

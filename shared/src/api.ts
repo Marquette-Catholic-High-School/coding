@@ -454,3 +454,83 @@ export type UpdateProjectInput = z.input<typeof updateProjectSchema>;
 
 /** GET /api/dashboard — shape depends on the viewer's role. */
 export type DashboardResponse = Dashboard;
+
+// ---------------------------------------------------------------------------
+// Reports (PDF downloads; teachers and admins)
+// ---------------------------------------------------------------------------
+//
+// Every report route answers `application/pdf` as a download (`Content-Disposition: attachment` with an ASCII
+// `filename` and a UTF-8 `filename*`, `Cache-Control: no-store`); errors are the usual `ApiErrorBody` JSON.
+// Only published assignments count. With `from`/`to`, an assignment counts when its due date — or, without one,
+// the date it was created — falls in the range (both ends included). Students are the class's current students.
+//
+// GET /api/reports/classes/:id           class report (the class's teacher or an admin; archived classes too)
+// GET /api/reports/classes/:id/students  one student report per student of the class, each on new pages
+// GET /api/reports/students/:id          one student's report: `classId` limits it to one class; otherwise every
+//                                        class the viewer can see that the student is in (teacher: their own)
+// GET /api/reports/school                school-wide report (admins only; `archived=1` includes archived classes)
+// 404 for a class or student the viewer can't report on (as if it didn't exist), 403 for a teacher asking for the
+// school report or a student, 400 (`fieldErrors` by query key) for bad query values or `from` after `to`.
+
+export const PAPER_SIZES = ['letter', 'a4'] as const;
+export type PaperSize = (typeof PAPER_SIZES)[number];
+
+/** Query string of every report route (unknown keys are ignored). */
+export const reportQuerySchema = z
+  .object({
+    /** First moment included (ISO with offset; the client sends the start of the chosen day in its time zone). */
+    from: z.iso.datetime({ offset: true }).optional(),
+    /** Last moment included (the client sends the end of the chosen day). */
+    to: z.iso.datetime({ offset: true }).optional(),
+    /** IANA time zone the report's dates and times are written in (the viewer's); defaults to UTC. */
+    tz: z
+      .string()
+      .max(64)
+      .refine((tz) => {
+        try {
+          new Intl.DateTimeFormat('en-US', { timeZone: tz });
+          return true;
+        } catch {
+          return false;
+        }
+      }, 'Unknown time zone')
+      .optional(),
+    paper: z.enum(PAPER_SIZES).default('letter'),
+    /** Student report only: just this class. */
+    classId: z.coerce.number().int().positive().optional(),
+    /** School report only: '1' includes archived classes. */
+    archived: z.enum(['0', '1']).optional(),
+  })
+  .refine((q) => !q.from || !q.to || Date.parse(q.from) <= Date.parse(q.to), {
+    message: 'The start date must be on or before the end date',
+    path: ['to'],
+  });
+export type ReportQueryInput = z.input<typeof reportQuerySchema>;
+export type ReportQuery = z.output<typeof reportQuerySchema>;
+
+export interface ReportClassOption {
+  id: number;
+  name: string;
+  teacherName: string;
+  archived: boolean;
+  studentCount: number;
+}
+
+export interface ReportStudentOption {
+  id: number;
+  name: string;
+  username: string;
+  /** Classes of `ReportOptionsResponse.classes` the student is in, in that list's order. */
+  classIds: number[];
+}
+
+/**
+ * GET /api/reports/options — what the viewer can report on: classes (teacher: the classes they own; admin: every
+ * class; archived ones included, active first, then by name) and the students in them (by name).
+ */
+export interface ReportOptionsResponse {
+  classes: ReportClassOption[];
+  students: ReportStudentOption[];
+  /** The school report is available (admins). */
+  school: boolean;
+}

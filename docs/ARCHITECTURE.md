@@ -299,8 +299,8 @@ CALL, MOD/DIV, LENGTH, `&` concatenation),
   join code. `PATCH` may keep already-assigned disabled languages but new ones must be enabled.
   `POST /classes/:id/regenerate-code`, `DELETE /classes/:id`. `POST /classes/join` (students only; staff → 400):
   unknown/disabled/archived → 400 `fieldErrors.joinCode`; already enrolled → 200 (idempotent).
-- Roster: stats per student — `submittedCount` (submitted|graded in this class), `lateCount` (published assignments
-  where `isLate`), `averagePercent` (mean of grade/points×100 over graded, points > 0). `POST` adds a student: new
+- Roster: stats per student over the class's published assignments — `submittedCount` (submitted|graded),
+  `lateCount` (where `isLate`), `averagePercent` (mean of grade/points×100 over graded, points > 0). `POST` adds a student: new
   username → create with temporary password; existing student → enroll (`temporaryPassword: null`; 409 if already
   enrolled; `email: null` in that response unless the caller is an admin or already teaches them); existing staff
   username → 409 `fieldErrors.username`. Remove = un-enroll only (work is kept).
@@ -513,6 +513,33 @@ CALL, MOD/DIV, LENGTH, `&` concatenation),
   alert/confirm/prompt/print is taken off the budget, so a prompt loop works but one whose dialogs return at once
   is still stopped.
 
+### 7.7 Reports (PDF)
+- Routes (`server/src/routes/reports.ts`, contract in the "Reports" section of `shared/src/api.ts`), teachers and
+  admins only (403 for students and student views): `GET /api/reports/classes/:id` (class report),
+  `/classes/:id/students` (one student report per current student, in one PDF), `/students/:id` (`?classId=` limits it
+  to one class; otherwise every class of the viewer's the student is in), `/school` (admins; `?archived=1` adds
+  archived classes) and `/options` (the classes and students the viewer may report on). A class or student the viewer
+  can't see answers 404 as if it didn't exist (also with `classId`, so ids can't be probed). Every report takes
+  `reportQuerySchema`: `from`/`to` (ISO with offset; an assignment counts by due date, or created date without one),
+  `tz` (dates in the PDF and the file name) and `paper` (`letter`/`a4`). The response is an attachment with an ASCII
+  `filename` and the exact UTF-8 `filename*`, `Cache-Control: no-store`.
+- `server/src/reports/`: `model.ts` (what each report shows and the counting rules), `data.ts` (builds the models
+  with a few set-based queries per report, never one per student), `pdf.ts` + `pdfParts.ts` + `format.ts` (layouts
+  drawn with pdfmake 0.3, pinned), `fonts.ts` (the Roboto files pdfmake ships). Counting: published assignments in
+  the range, current students; Late = handed in after the due date (not returned work); Missing = not handed in, not
+  returned and past due — so the app's "late" badges (which include missing work) equal Late + Missing, as the PDF
+  notes say. Average = mean of graded percents. Student reports show grades and autograde results (auto score, tests
+  passed), never code or feedback.
+- PDFs: class (landscape: stat boxes, assignments, students, a grade grid of ≤10 assignments per chunk, notes),
+  student (portrait, one table per class), student set (each student on their own pages, numbered per student, the
+  notes once at the end), school (landscape: classes, teachers, every student with missing work). Table headers
+  repeat on each page and rows never split; statuses read in grayscale (bold/italic), colour is only an accent.
+  Characters Roboto can't draw become a look-alike or "�" (a missing glyph would garble the text around it).
+- UI: Reports page (`/reports`, staff; the School card only when `options.school`), "Reports" on the class page
+  header, "Download report" in a student's ⋯ menu on the Students tab and the Users page; all open `ReportModal`
+  (choice cards, optional From/To days, "Download PDF"). `api.download` fetches the PDF with the usual headers and
+  `saveBlob` saves it under the server's file name. Paper defaults by browser region (Letter for US/CA/MX/PH/…).
+
 ## 8. Security notes
 - Sessions: random 32-byte token in an httpOnly SameSite=Lax cookie; only its SHA-256 is stored. Passwords: scrypt.
 - CSRF: non-GET `/api` requests must carry `x-codeclass: 1`. Every request with a valid session (GET included) must
@@ -526,6 +553,8 @@ CALL, MOD/DIV, LENGTH, `&` concatenation),
   CDN (no other hosts, so nothing can be sent elsewhere), `worker-src`/`child-src 'none'` (no nested workers). The
   policy is a constant (no request headers go into it). Same-origin `/api` calls from a worker fail the token check.
 - Students never receive hidden tests or other students' data. Teachers only manage their own classes (admins all).
+- PDF reports: pdfmake is configured once to refuse every URL and every local file except its four Roboto fonts, and
+  names/titles are only drawn as plain text.
 - A student view ("Sign in as student", §7.1) is the student's session: staff endpoints are 403 from it, and it can't
   change the student's password, name or email. Its cookie is as powerful as the staff session it replaced, because it
   can go back without a password; it expires within 8 hours and never outlives the staff session.

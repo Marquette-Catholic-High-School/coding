@@ -15,6 +15,7 @@ import { router as dashboardRouter } from './routes/dashboard';
 import { router as invitesRouter } from './routes/invites';
 import { router as languagesRouter } from './routes/languages';
 import { router as projectsRouter } from './routes/projects';
+import { router as reportsRouter } from './routes/reports';
 import { router as rosterRouter } from './routes/roster';
 import { router as setupRouter } from './routes/setup';
 import { router as submissionsRouter } from './routes/submissions';
@@ -100,6 +101,7 @@ export function createApp() {
   api.use(submissionsRouter);
   api.use(projectsRouter);
   api.use(dashboardRouter);
+  api.use(reportsRouter);
   api.use(() => {
     throw notFound('Unknown API route');
   });

@@ -1,8 +1,9 @@
-// Fetch wrapper for the JSON API plus the shared QueryClient and query keys.
+// Fetch wrapper for the JSON API (and file downloads) plus the shared QueryClient and query keys.
 // Feature hooks live next to this file (api/<area>.ts) and use `api` + `queryKeys`.
 
 import type { ApiErrorBody } from '@codeclass/shared';
 import { QueryClient } from '@tanstack/react-query';
+import { filenameFromContentDisposition, type DownloadedFile } from './download';
 
 export class ApiError extends Error {
   constructor(
@@ -103,27 +104,67 @@ async function readBody(res: Response): Promise<unknown> {
   return text ? (JSON.parse(text) as unknown) : null;
 }
 
+/** A session from before the anti-CSRF cookie existed (or a stale cookie): the 403 sets a fresh cookie, so retry once. */
+function isCsrfRefusal(res: Response, data: unknown): boolean {
+  return res.status === 403 && (data as ApiErrorBody | null)?.error?.code === 'csrf';
+}
+
+/** The error to throw for a failed response (`data` = its JSON body); rechecks the session when that's the cause. */
+function failure(res: Response, data: unknown, userId: number | undefined): Error {
+  const err = (data as ApiErrorBody | null)?.error;
+  const message = err?.message ?? `Request failed (${res.status})`;
+  if (err?.code === 'account-changed') {
+    onSessionProblem?.();
+    return new AccountChangedError(message);
+  }
+  if (res.status === 401 && userId !== undefined) onSessionProblem?.();
+  return new ApiError(res.status, message, err?.fieldErrors);
+}
+
 async function request<T>(method: Method, path: string, body?: unknown): Promise<T> {
   const json = body !== undefined ? JSON.stringify(body) : undefined;
   const userId = shownUserId(method, path);
   let res = await send(method, path, json, userId);
   let data = await readBody(res);
-  // A session from before the anti-CSRF cookie existed (or a stale cookie): the 403 sets a fresh cookie, so retry once.
-  if (res.status === 403 && (data as ApiErrorBody | null)?.error?.code === 'csrf') {
+  if (isCsrfRefusal(res, data)) {
     res = await send(method, path, json, userId);
     data = await readBody(res);
   }
-  if (!res.ok) {
-    const err = (data as ApiErrorBody | null)?.error;
-    const message = err?.message ?? `Request failed (${res.status})`;
-    if (err?.code === 'account-changed') {
-      onSessionProblem?.();
-      throw new AccountChangedError(message);
-    }
-    if (res.status === 401 && userId !== undefined) onSessionProblem?.();
-    throw new ApiError(res.status, message, err?.fieldErrors);
-  }
+  if (!res.ok) throw failure(res, data, userId);
   return data as T;
+}
+
+/** A failed download's JSON error body, or null when it has none (e.g. a proxy's HTML error page). */
+async function readErrorBody(res: Response): Promise<unknown> {
+  try {
+    return await readBody(res);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * GET a file (e.g. a PDF report) with the same headers, retry and errors as the JSON calls: an error answer's JSON body
+ * becomes the usual ApiError / AccountChangedError.
+ */
+async function download(path: string): Promise<DownloadedFile> {
+  const userId = shownUserId('GET', path);
+  let res = await send('GET', path, undefined, userId);
+  if (!res.ok) {
+    let data = await readErrorBody(res);
+    if (isCsrfRefusal(res, data)) {
+      res = await send('GET', path, undefined, userId);
+      data = res.ok ? null : await readErrorBody(res);
+    }
+    if (!res.ok) throw failure(res, data, userId);
+  }
+  let blob: Blob;
+  try {
+    blob = await res.blob();
+  } catch {
+    throw new NetworkError(); // the connection dropped part-way
+  }
+  return { blob, filename: filenameFromContentDisposition(res.headers.get('Content-Disposition')) };
 }
 
 export const api = {
@@ -132,6 +173,8 @@ export const api = {
   put: <T>(path: string, body?: unknown) => request<T>('PUT', path, body ?? {}),
   patch: <T>(path: string, body?: unknown) => request<T>('PATCH', path, body ?? {}),
   delete: <T>(path: string) => request<T>('DELETE', path),
+  /** GET a file download (see `download`); save it with `saveBlob` (api/download.ts). */
+  download,
 };
 
 /** Field errors from a 400 response, for `form.setErrors(fieldErrors(err))`. */
@@ -184,5 +227,6 @@ export const queryKeys = {
     submission: (id: number, studentId: number) => ['assignments', 'submission', id, studentId] as const,
   },
   projects: { all: ['projects'] as const, detail: (id: number) => ['projects', 'detail', id] as const },
+  reports: { options: ['reports', 'options'] as const },
   joinPreview: (code: string) => ['join-preview', code] as const,
 };

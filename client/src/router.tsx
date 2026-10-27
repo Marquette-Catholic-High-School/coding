@@ -43,6 +43,7 @@ const LanguagePage = lazyPage(() => import('./pages/languages/LanguagePage'), 'L
 const LanguagesPage = lazyPage(() => import('./pages/languages/LanguagesPage'), 'LanguagesPage');
 const ProjectPage = lazyPage(() => import('./pages/playground/ProjectPage'), 'ProjectPage');
 const ProjectsPage = lazyPage(() => import('./pages/playground/ProjectsPage'), 'ProjectsPage');
+const ReportsPage = lazyPage(() => import('./pages/reports/ReportsPage'), 'ReportsPage');
 
 /** A lazy page with a loader while its chunk downloads (full-page for the pages outside the app shell). */
 function page(Page: LazyExoticComponent<ComponentType>, { fullPage = false } = {}) {
@@ -86,6 +87,7 @@ export const router = createBrowserRouter([
                   { path: '/assignments/:assignmentId/submissions/:studentId', element: page(GradingPage) },
                   { path: '/languages', element: page(LanguagesPage) },
                   { path: '/languages/:languageId', element: page(LanguagePage) },
+                  { path: '/reports', element: page(ReportsPage) },
                 ],
               },
               { path: '/assignments/:assignmentId', element: page(AssignmentPage) },

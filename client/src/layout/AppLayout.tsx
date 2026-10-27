@@ -30,6 +30,7 @@ import {
   IconMoon,
   IconPackages,
   IconRefresh,
+  IconReportAnalytics,
   IconSchool,
   IconSun,
   IconUserCircle,
@@ -206,6 +207,9 @@ export function AppLayout() {
             leftSection={<IconSchool size={18} />}
             active={pathname === '/classes'}
           />
+          {staff && (
+            <NavLink component={Link} to="/reports" label="Reports" leftSection={<IconReportAnalytics size={18} />} active={is('/reports')} />
+          )}
         </AppShell.Section>
         <Divider my="sm" label="Classes" labelPosition="left" />
         <AppShell.Section grow component={ScrollArea}>

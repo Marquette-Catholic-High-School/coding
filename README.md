@@ -48,6 +48,11 @@ JavaScript, Python and a *Classroom Pseudocode* language.
    saved as their work. **Back to my account** (in the banner at the top, or the account menu) returns you to your
    own account without a password. Admins can sign in as any student; teachers as students whose classes are all
    theirs.
+7. **Reports** (in the sidebar, the **Reports** button on a class, or **Download report** in a student's **⋯** menu)
+   downloads PDFs to print or share: a **class report** (summary, every assignment and student, and a grid of every
+   grade), **student reports** (one student's grades, autograde results and late or missing work; or one per
+   student for the whole class), and for admins a **school report** (every class and teacher, and every student with
+   missing work). Pick a date range, or leave it empty for everything. Teachers get reports for their own classes.
 
 ## Languages
 

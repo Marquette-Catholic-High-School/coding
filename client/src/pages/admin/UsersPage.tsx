@@ -18,6 +18,7 @@ import type { Role, User, UserWithStats } from '@codeclass/shared';
 import {
   IconChalkboardTeacher,
   IconDots,
+  IconFileDownload,
   IconKey,
   IconPencil,
   IconSearch,
@@ -39,6 +40,7 @@ import { RelativeTime } from '../../components/RelativeTime';
 import { TemporaryPasswordModal } from '../../components/TemporaryPasswordModal';
 import { usePageTitle } from '../../hooks/usePageTitle';
 import { useSignInAsStudent } from '../../hooks/useSignInAsStudent';
+import { ReportModal, type ReportModalTarget } from '../reports/ReportModal';
 import { UserFormModal, type Credentials } from './UserFormModal';
 
 type Tab = 'staff' | 'students';
@@ -61,6 +63,7 @@ export function UsersPage() {
   const [search, setSearch] = useState('');
   const [form, setForm] = useState<{ opened: boolean; user: UserWithStats | null }>({ opened: false, user: null });
   const [credentials, setCredentials] = useState<Credentials | null>(null);
+  const [report, setReport] = useState<ReportModalTarget | null>(null);
 
   const setTab = (value: string | null) => {
     setSearchParams(
@@ -75,6 +78,7 @@ export function UsersPage() {
 
   const openCreate = () => setForm({ opened: true, user: null });
   const openEdit = (user: UserWithStats) => setForm({ opened: true, user });
+  const openReport = (user: UserWithStats) => setReport({ kind: 'student', student: user });
 
   const confirmReset = (user: UserWithStats) => {
     const modalId = `reset-password-${user.id}`;
@@ -172,7 +176,15 @@ export function UsersPage() {
         {({ users: all }) => {
           const staff = all.filter((u) => u.role !== 'student');
           const students = all.filter((u) => u.role === 'student');
-          const tableProps = { me, search, onEdit: openEdit, onSignInAs: signInAs, onReset: confirmReset, onDelete: confirmDelete };
+          const tableProps = {
+            me,
+            search,
+            onEdit: openEdit,
+            onSignInAs: signInAs,
+            onReport: openReport,
+            onReset: confirmReset,
+            onDelete: confirmDelete,
+          };
           return (
             <Tabs value={tab} onChange={setTab} keepMounted={false}>
               <Tabs.List mb="lg">
@@ -222,6 +234,7 @@ export function UsersPage() {
         onCreated={setCredentials}
       />
       <TemporaryPasswordModal credentials={credentials} onClose={() => setCredentials(null)} />
+      <ReportModal target={report} onClose={() => setReport(null)} />
     </>
   );
 }
@@ -253,6 +266,7 @@ function UsersTable({
   search,
   onEdit,
   onSignInAs,
+  onReport,
   onReset,
   onDelete,
 }: {
@@ -261,6 +275,7 @@ function UsersTable({
   search: string;
   onEdit: (user: UserWithStats) => void;
   onSignInAs: (user: UserWithStats) => void;
+  onReport: (user: UserWithStats) => void;
   onReset: (user: UserWithStats) => void;
   onDelete: (user: UserWithStats) => void;
 }) {
@@ -296,6 +311,7 @@ function UsersTable({
                 isMe={user.id === me.id}
                 onEdit={onEdit}
                 onSignInAs={onSignInAs}
+                onReport={onReport}
                 onReset={onReset}
                 onDelete={onDelete}
               />
@@ -318,6 +334,7 @@ function UserRow({
   isMe,
   onEdit,
   onSignInAs,
+  onReport,
   onReset,
   onDelete,
 }: {
@@ -325,6 +342,7 @@ function UserRow({
   isMe: boolean;
   onEdit: (user: UserWithStats) => void;
   onSignInAs: (user: UserWithStats) => void;
+  onReport: (user: UserWithStats) => void;
   onReset: (user: UserWithStats) => void;
   onDelete: (user: UserWithStats) => void;
 }) {
@@ -388,9 +406,14 @@ function UserRow({
               Edit
             </Menu.Item>
             {user.role === 'student' && (
-              <Menu.Item leftSection={<IconUserShare size={16} />} onClick={() => onSignInAs(user)}>
-                Sign in as student
-              </Menu.Item>
+              <>
+                <Menu.Item leftSection={<IconUserShare size={16} />} onClick={() => onSignInAs(user)}>
+                  Sign in as student
+                </Menu.Item>
+                <Menu.Item leftSection={<IconFileDownload size={16} />} onClick={() => onReport(user)}>
+                  Download report
+                </Menu.Item>
+              </>
             )}
             {isMe ? (
               <Menu.Item leftSection={<IconUserCircle size={16} />} component={Link} to="/account">
