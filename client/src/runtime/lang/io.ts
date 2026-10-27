@@ -23,8 +23,13 @@ export interface RunIO {
   /**
    * Next line of input without "\n", or null at end of input. Pre-supplied lines come first; after that the call
    * blocks for a typed line when the run is interactive (until the user ends the input).
+   *
+   * `prompt` is the text the input call itself has just printed to stdout (Python's input("Name: "), JavaScript's
+   * prompt("Name: "), pseudocode's INPUT "Name: ", n), or '' when it printed none. Runners leave it out only for
+   * input calls that can't print a prompt of their own (Lua's io.read()): the prompt is then the unfinished stdout
+   * line, unless input was already read on that line. See `RunOutcome.promptlessStdout`.
    */
-  readLine(): string | null;
+  readLine(prompt?: string): string | null;
   /** Unfinished stdout line, i.e. the prompt shown before an input request. */
   pendingPrompt(): string;
   /** Send buffered output to the page now. */

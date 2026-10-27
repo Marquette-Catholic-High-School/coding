@@ -4,7 +4,7 @@ import { IconAlertTriangle, IconCheck, IconEyeOff, IconPlayerPlay, IconWand, Ico
 import { useEffect, useRef, useState } from 'react';
 import { CodeEditor } from '../../ide';
 import { runTests } from '../../runtime';
-import { expectedFromOutput } from './editorForm';
+import { expectedFromOutput, promptExample } from './editorForm';
 
 interface ModelSolutionProps {
   language: Language;
@@ -47,12 +47,15 @@ function ModelSolutionBody({
   onApply,
 }: ModelSolutionProps & { onCancel: () => void }) {
   const hasSolution = solutionCode.trim() !== '';
+  const prompt = promptExample(language);
   const [code, setCode] = useState(hasSolution ? solutionCode : starterCode);
   // Keeping the code as the solution is the default only when there isn't one to replace.
   const [keepAsSolution, setKeepAsSolution] = useState(!hasSolution);
   const [running, setRunning] = useState(false);
   const [finished, setFinished] = useState(0);
   const [results, setResults] = useState<TestResult[] | null>(null);
+  // Test id → what the solution printed for it without its input prompts.
+  const [outputs, setOutputs] = useState(new Map<string, string>());
   // The code that produced `results` (it may have been edited while the tests ran).
   const [ranCode, setRanCode] = useState('');
   const controllerRef = useRef<AbortController | null>(null);
@@ -69,13 +72,18 @@ function ModelSolutionBody({
     setResults(null);
     setFinished(0);
     try {
+      const promptless = new Map<string, string>();
       const out = await runTests({ kind: language.kind, pseudocode: language.pseudocode }, runCode, tests, {
         compareMode,
         signal: controller.signal,
-        onProgress: ({ index }) => setFinished(index + 1),
+        onProgress: ({ index, result, promptlessOutput }) => {
+          promptless.set(result.testId, promptlessOutput);
+          setFinished(index + 1);
+        },
       });
       if (!controller.signal.aborted) {
         setResults(out);
+        setOutputs(promptless);
         setRanCode(runCode);
       }
     } finally {
@@ -86,12 +94,13 @@ function ModelSolutionBody({
   const byId = new Map((results ?? []).map((r) => [r.testId, r]));
   const usable = (results ?? []).filter((r) => r.error == null);
   const failed = results ? tests.length - usable.length : 0;
+  const expected = (result: TestResult) => expectedFromOutput(outputs.get(result.testId) ?? result.actualOutput, compareMode);
 
   // Unchanged starter code is never a solution worth keeping.
   const offerKeep = ranCode.trim() !== '' && ranCode !== solutionCode && ranCode !== starterCode;
   const apply = () => {
     onApply(
-      new Map(usable.map((r) => [r.testId, expectedFromOutput(r.actualOutput, compareMode)])),
+      new Map(usable.map((r) => [r.testId, expected(r)])),
       offerKeep && keepAsSolution ? ranCode : null,
     );
   };
@@ -100,7 +109,8 @@ function ModelSolutionBody({
     <Stack gap="md">
       <Text size="sm" c="dimmed">
         {hasSolution ? "This is the assignment's solution; change it if you need to. " : 'Paste or write a working solution. '}
-        It runs once for each test's input, and what it prints becomes that test's expected output.
+        It runs once for each test's input, and what it prints becomes that test's expected output
+        {prompt ? `, leaving out input prompts such as ${prompt}` : ''}.
       </Text>
       <CodeEditor
         value={code}
@@ -156,7 +166,7 @@ function ModelSolutionBody({
                       )}
                     </Group>
                     {ok ? (
-                      <Code block>{expectedFromOutput(result.actualOutput, compareMode) || '(no output)'}</Code>
+                      <Code block>{expected(result) || '(no output)'}</Code>
                     ) : (
                       <Text size="sm" c="red">
                         {result?.error ?? 'This test did not run.'}

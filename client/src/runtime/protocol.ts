@@ -44,6 +44,11 @@ export type WorkerToMain =
   /** `batch` counts the run's output messages from 1 (the page acknowledges them in the output tail). */
   | { type: 'output'; id: number; batch: number; chunks: OutputChunk[] }
   | { type: 'input-request'; id: number; prompt: string | null }
+  /**
+   * The program read (or tried to read) a line of input after printing a prompt: characters `start` to `end` of its
+   * stdout (counted as the page receives them, whichever way the output arrives). See `RunOutcome.promptlessStdout`.
+   */
+  | { type: 'prompt'; id: number; start: number; end: number }
   | {
       type: 'done';
       id: number;

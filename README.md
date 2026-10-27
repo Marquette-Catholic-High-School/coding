@@ -35,8 +35,12 @@ JavaScript, Python and a *Classroom Pseudocode* language.
    any of your classes. Copies start as drafts with no due date unless you choose otherwise.
 5. Students code, run tests and submit. You grade from the assignment page: type each grade straight into the
    student list, or open a student's work to read it and leave feedback. **Autograde** grades handed-in work for
-   you: work that matches your solution gets full marks, other work scores the share of tests it passes (hidden
-   ones included), and with no tests, work that prints the same as your solution gets full marks. It updates the
+   you: work that is the same program as your solution gets full marks (spacing, indentation, blank lines,
+   comments and keyword capitals don't count), other work scores the share of tests it passes (hidden ones
+   included), and with no tests, work that prints the same as your solution gets full marks. Output is compared the
+   way the assignment's **How to compare output** says — new assignments ignore all spaces and line breaks — and
+   input prompts typed on the same line as the answer (`input("Name: ")`) don't count. If your solution asks for
+   input, add tests so autograde can check other students' programs too. It updates the
    grades it set before and keeps the ones you typed yourself unless you choose to replace them. To autograde one
    student, use **Autograde** in their row's **⋯** menu or on their grading page.
 6. **Sign in as student** (a student's **⋯** menu on the class **Students** tab or the **Users** page, or **View as

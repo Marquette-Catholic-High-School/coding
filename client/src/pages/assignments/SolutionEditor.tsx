@@ -31,7 +31,8 @@ export function SolutionEditor({ form, language, supportsTests }: { form: Editor
       </Group>
       <Text size="sm" c="dimmed" mb="md">
         Optional. Your own answer to the assignment: you can open and run it while grading, and choose below when students
-        see it.
+        see it. Autograde gives full marks to work that is the same program as your solution — spacing, indentation, blank
+        lines and comments don't count.
       </Text>
       <Stack gap="lg">
         {language ? (

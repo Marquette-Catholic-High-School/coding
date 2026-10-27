@@ -77,6 +77,66 @@ describe('OutputBuffer', () => {
     expect(buffer.pendingPrompt).toBe('');
   });
 
+  it('finds the prompt an input call printed itself at the end of stdout', () => {
+    const { buffer } = setup();
+    buffer.write('stdout', 'Hi\n2 ');
+    buffer.write('stdout', 'Name: ');
+    expect(buffer.takePrompt('Name: ')).toEqual({ start: 5, end: 11 });
+    buffer.echoInput('Sam');
+    // After a read, on the same line, and with a line break in it.
+    buffer.write('stdout', 'Age?\n');
+    expect(buffer.takePrompt('Age?\n')).toEqual({ start: 11, end: 16 });
+    // A read that printed no prompt has none, whatever is on the line.
+    buffer.write('stdout', 'Total: ');
+    expect(buffer.takePrompt('')).toBeNull();
+    // Nor does one whose prompt isn't what stdout ends with (it went elsewhere, or was cut off).
+    buffer.write('stdout', 'Next');
+    expect(buffer.takePrompt('Next: ')).toBeNull();
+  });
+
+  it('takes the unfinished line as the prompt of a read that prints none of its own, unless input was read on it', () => {
+    const { buffer } = setup();
+    buffer.write('stdout', 'Hi\nWhat is your ');
+    buffer.write('stderr', 'warning\n');
+    buffer.write('stdout', 'name? ');
+    expect(buffer.takePrompt()).toEqual({ start: 3, end: 22 });
+    buffer.echoInput('Sam');
+    // Text printed between two reads on one line is output: io.write(n * 2, " ") in a loop that reads numbers.
+    buffer.write('stdout', '2 ');
+    expect(buffer.takePrompt()).toBeNull();
+    buffer.write('stdout', '4 ');
+    expect(buffer.takePrompt()).toBeNull();
+    // A new line starts afresh.
+    buffer.write('stdout', '\nAge? ');
+    expect(buffer.takePrompt()).toEqual({ start: 27, end: 32 });
+    expect(buffer.takePrompt()).toBeNull();
+    buffer.write('stdout', 'Thanks\n');
+    expect(buffer.takePrompt()).toBeNull();
+  });
+
+  it('leaves a prompt longer than it keeps in the output', () => {
+    const { buffer } = setup({ maxChars: 10_000 });
+    const prompt = `${'x'.repeat(2_500)}? `;
+    buffer.write('stdout', prompt);
+    expect(buffer.takePrompt(prompt)).toBeNull();
+    buffer.write('stdout', 'Name: ');
+    expect(buffer.takePrompt('Name: ')).toEqual({ start: 2_502, end: 2_508 });
+  });
+
+  it('keeps a whole long prompt, beyond what an input request shows', () => {
+    const { buffer } = setup({ maxChars: 10_000 });
+    buffer.write('stdout', `${'x'.repeat(800)}? `);
+    expect(buffer.pendingPrompt).toHaveLength(500);
+    expect(buffer.takePrompt()).toEqual({ start: 0, end: 802 });
+  });
+
+  it('counts only the stdout that fits under the output limit', () => {
+    const { buffer } = setup({ maxChars: 10 });
+    buffer.write('stdout', 'ab\ncdefghijkl');
+    buffer.write('stdout', 'more');
+    expect(buffer.takePrompt()).toEqual({ start: 3, end: 10 });
+  });
+
   it('cuts output at the limit and adds one system line', () => {
     const { buffer, sent } = setup({ maxChars: 10 });
     buffer.write('stdout', '12345');

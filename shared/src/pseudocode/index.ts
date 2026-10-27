@@ -2,6 +2,7 @@
 export * from './types';
 export { pseudocodeConfigSchema } from './schema';
 export { runPseudocode, checkPseudocode } from './engine';
+export { normalizeLiteral, pseudocodeFingerprint, samePseudocodeProgram } from './fingerprint';
 export {
   PSEUDOCODE_PRESETS,
   DEFAULT_PRESET_ID,

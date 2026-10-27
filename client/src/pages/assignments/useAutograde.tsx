@@ -17,12 +17,16 @@ import {
   autogradeTargets,
   emptyTally,
   prepareAutograde,
+  reusablePreparation,
+  runsSolution,
+  tallyStep,
   type AutogradeActivity,
   type AutogradeMethod,
   type AutogradeOptions,
   type AutogradeRunner,
   type AutogradeStep,
-  type ReferenceProblem,
+  type AutogradeSummary,
+  type PreparedAutograde,
 } from './autograde';
 
 /** Same limit as one test. */
@@ -59,6 +63,47 @@ function autogradeRunner(assignment: Assignment, target: RunTarget, signal: Abor
     },
     runProgram: (code) => runOnce(target, code, signal),
   };
+}
+
+/** How the notification ends: closes by itself unless something needs the teacher's attention. */
+function finalNotification(id: string, summary: AutogradeSummary) {
+  notifications.update({
+    id,
+    loading: false,
+    autoClose: summary.keepOpen ? false : 10_000,
+    withCloseButton: true,
+    color: summary.color,
+    icon: summary.color === 'teal' ? <IconCheck size={18} /> : <IconAlertTriangle size={18} />,
+    title: summary.title,
+    message: summary.message,
+  });
+}
+
+/**
+ * Gets a run ready while the Autograde modal is open, as the run would (`prepareAutograde` runs the solution), so the
+ * modal can warn about the solution before anything is graded and the run can start from it. Null until it's ready;
+ * closing the modal stops it.
+ */
+export function useAutogradePreparation(assignment: Assignment, language: RunTarget, method: AutogradeMethod): PreparedAutograde | null {
+  // Everything the preparation depends on; `method` and the language are new objects on every render.
+  const key = JSON.stringify([assignment.id, assignment.solutionCode, assignment.compareMode, assignment.tests, language.kind, language.pseudocode, method]);
+  const [ready, setReady] = useState<{ key: string; prepared: PreparedAutograde } | null>(null);
+  const latest = useRef({ assignment, language, method });
+  latest.current = { assignment, language, method };
+
+  useEffect(() => {
+    const { assignment, language, method } = latest.current;
+    const controller = new AbortController();
+    const target: RunTarget = { kind: language.kind, pseudocode: language.pseudocode };
+    void prepareAutograde(assignment, method, target, autogradeRunner(assignment, target, controller.signal), controller.signal).then(
+      (prepared) => {
+        if (!controller.signal.aborted) setReady({ key, prepared });
+      },
+    );
+    return () => controller.abort();
+  }, [key]);
+
+  return ready?.key === key ? ready.prepared : null;
 }
 
 /** Whose work to autograde on its own. */
@@ -123,7 +168,8 @@ export function useAutograde(assignment: Assignment, language: RunTarget | null,
   /** Saves autograde's PATCH for one student's work and returns the work as saved. */
   const save = (studentId: number) => async (patch: GradeSubmissionInput) => (await grade.mutateAsync({ studentId, ...patch })).submission;
 
-  const start = async (rows: SubmissionRow[], options: AutogradeOptions) => {
+  /** Autogrades the chosen work; `ready` = the run the modal got ready (`useAutogradePreparation`), if it finished. */
+  const start = async (rows: SubmissionRow[], options: AutogradeOptions, ready: PreparedAutograde | null = null) => {
     const targets = autogradeTargets(rows, options.scope);
     if (!method || !language || targets.length === 0) return;
     const controller = begin({ kind: 'all' });
@@ -131,18 +177,18 @@ export function useAutograde(assignment: Assignment, language: RunTarget | null,
     const { signal } = controller;
     const target: RunTarget = { kind: language.kind, pseudocode: language.pseudocode };
     const runner = autogradeRunner(assignment, target, signal);
+    const reuse = reusablePreparation(ready);
     const id = notifications.show({
       loading: true,
       title: `Autograding 1 of ${targets.length}`,
-      message: method.output ? 'Running your solution…' : 'Getting the language ready…',
+      message: !reuse && runsSolution(method) ? 'Running your solution…' : 'Getting the language ready…',
       autoClose: false,
       withCloseButton: false,
     });
     const tally = emptyTally(targets.length);
-    let reference: ReferenceProblem | null = null;
+    let prepared: PreparedAutograde | null = null;
     try {
-      const prepared = await prepareAutograde(assignment, method, runner, signal);
-      reference = prepared.reference;
+      prepared = reuse ?? (await prepareAutograde(assignment, method, target, runner, signal));
       for (const [index, row] of targets.entries()) {
         if (signal.aborted) break;
         notifications.update({
@@ -162,22 +208,20 @@ export function useAutograde(assignment: Assignment, language: RunTarget | null,
           signal,
         );
         if (!step) break;
-        tally[step.outcome] += 1;
+        tallyStep(tally, step);
       }
     } finally {
       const stopped = signal.aborted;
       finish();
-      const summary = autogradeSummary(tally, { stopped, setGrades: options.setGrades, reference });
-      notifications.update({
+      finalNotification(
         id,
-        loading: false,
-        autoClose: 10_000,
-        withCloseButton: true,
-        color: summary.color,
-        icon: summary.color === 'teal' ? <IconCheck size={18} /> : <IconAlertTriangle size={18} />,
-        title: summary.title,
-        message: summary.message,
-      });
+        autogradeSummary(tally, {
+          stopped,
+          setGrades: options.setGrades,
+          reference: prepared?.reference ?? null,
+          solutionCheck: prepared?.solutionCheck ?? null,
+        }),
+      );
     }
   };
 
@@ -203,15 +247,14 @@ export function useAutograde(assignment: Assignment, language: RunTarget | null,
     const id = notifications.show({
       loading: true,
       title: `Autograding ${student.name}'s work`,
-      message: method.output ? 'Running your solution…' : 'Getting the language ready…',
+      message: runsSolution(method) ? 'Running your solution…' : 'Getting the language ready…',
       autoClose: false,
       withCloseButton: false,
     });
     let step: AutogradeStep | null = null;
-    let reference: ReferenceProblem | null = null;
+    let prepared: PreparedAutograde | null = null;
     try {
-      const prepared = await prepareAutograde(assignment, method, runner, signal);
-      reference = prepared.reference;
+      prepared = await prepareAutograde(assignment, method, target, runner, signal);
       if (!signal.aborted) {
         notifications.update({ id, message: `Checking ${student.name}'s code…` });
         step = await autogradeSubmission(
@@ -234,25 +277,19 @@ export function useAutograde(assignment: Assignment, language: RunTarget | null,
       void queryClient.invalidateQueries({ queryKey: queryKeys.assignments.submissions(assignment.id) });
       void queryClient.invalidateQueries({ queryKey: queryKeys.assignments.submission(assignment.id, student.id) });
     }
-    const summary = autogradeOneSummary(step, {
-      name: student.name,
-      before: submission,
-      outOf: assignment.points,
-      tests: assignment.tests,
-      method,
-      kind: language.kind,
-      reference,
-    });
-    notifications.update({
+    finalNotification(
       id,
-      loading: false,
-      autoClose: 10_000,
-      withCloseButton: true,
-      color: summary.color,
-      icon: summary.color === 'teal' ? <IconCheck size={18} /> : <IconAlertTriangle size={18} />,
-      title: summary.title,
-      message: summary.message,
-    });
+      autogradeOneSummary(step, {
+        name: student.name,
+        before: submission,
+        outOf: assignment.points,
+        tests: assignment.tests,
+        kind: language.kind,
+        compareMode: assignment.compareMode,
+        reference: prepared?.reference ?? null,
+        solutionCheck: prepared?.solutionCheck ?? null,
+      }),
+    );
     return step;
   };
 

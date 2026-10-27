@@ -1,6 +1,7 @@
 import type { Assignment } from '@codeclass/shared';
+import { createPseudocodeConfig } from '@codeclass/shared/pseudocode';
 import { describe, expect, it } from 'vitest';
-import { fingerprint, initialValues, toInput, validateSolutionVisibility } from './editorForm';
+import { expectedFromOutput, fingerprint, initialValues, promptExample, toInput, validateSolutionVisibility } from './editorForm';
 
 const assignment: Assignment = {
   id: 7,
@@ -72,5 +73,42 @@ describe('validateSolutionVisibility', () => {
     for (const visibility of ['hidden', 'after_graded', 'visible'] as const) {
       expect(validateSolutionVisibility(visibility, null)).toBeNull();
     }
+  });
+});
+
+describe('compare mode', () => {
+  it('ignores all spacing for a new assignment', () => {
+    expect(initialValues(null, null).compareMode).toBe('ignore-whitespace');
+  });
+
+  it("keeps an existing assignment's mode", () => {
+    expect(initialValues(assignment, null).compareMode).toBe('trim');
+    expect(toInput(initialValues(assignment, null), { kind: 'python' }).compareMode).toBe('trim');
+  });
+});
+
+describe('expectedFromOutput', () => {
+  it('drops one final line break unless matching is exact', () => {
+    expect(expectedFromOutput('8\n', 'ignore-whitespace')).toBe('8');
+    expect(expectedFromOutput('a\r\nb\r\n', 'trim')).toBe('a\r\nb');
+    expect(expectedFromOutput('8\n\n', 'ignore-case')).toBe('8\n');
+    expect(expectedFromOutput('8\n\n', 'exact')).toBe('8\n\n');
+  });
+});
+
+describe('promptExample', () => {
+  it("shows a prompt the way the language's input call prints it", () => {
+    expect(promptExample({ kind: 'python', pseudocode: null })).toBe('input("Name: ")');
+    expect(promptExample({ kind: 'typescript', pseudocode: null })).toBe('prompt("Name: ")');
+    expect(promptExample({ kind: 'lua', pseudocode: null })).toBe('io.write("Name: ") just before io.read()');
+    expect(promptExample({ kind: 'pseudocode', pseudocode: createPseudocodeConfig('classroom') })).toBe('INPUT "Name: ", name');
+    expect(promptExample({ kind: 'pseudocode', pseudocode: createPseudocodeConfig('aqa') })).toBe('USERINPUT "Name: ", name');
+  });
+
+  it('has none for languages without input prompts', () => {
+    expect(promptExample({ kind: 'sql', pseudocode: null })).toBeNull();
+    expect(promptExample({ kind: 'web', pseudocode: null })).toBeNull();
+    const noInput = createPseudocodeConfig('classroom');
+    expect(promptExample({ kind: 'pseudocode', pseudocode: { ...noInput, constructs: { ...noInput.constructs, input: false } } })).toBeNull();
   });
 });

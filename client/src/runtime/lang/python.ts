@@ -2,8 +2,9 @@
 // as they were before the first run; imported modules and files stay for later runs in the same worker (graders
 // pass `freshWorker`). stdout/stderr are raw byte streams so prompts printed by input() (no newline) reach the
 // console before the input request; stdin reads lines through the worker's input source (end of input ->
-// EOFError, as in a real terminal). Once Pyodide has loaded, the worker's network APIs are blocked except for
-// package downloads from the Pyodide CDN, and programs can't import the modules that lead to JavaScript.
+// EOFError, as in a real terminal), telling it the prompt input() printed (see `RunIO.readLine`). Once Pyodide has
+// loaded, the worker's network APIs are blocked except for package downloads from the Pyodide CDN, and programs
+// can't import the modules that lead to JavaScript.
 
 import { PYODIDE_INDEX_URL } from '@codeclass/shared';
 import type { RunError } from '../types';
@@ -23,7 +24,7 @@ interface PyodideStreams {
 
 interface Pyodide extends PyodideStreams {
   runPython(code: string): unknown;
-  globals: { get(name: string): unknown };
+  globals: { get(name: string): unknown; set(name: string, value: unknown): void };
   loadPackagesFromImports(
     code: string,
     options?: { messageCallback?: (message: string) => void; errorCallback?: (message: string) => void },
@@ -37,14 +38,32 @@ interface PyodideModule {
 const SOURCE_NAME = 'main.py';
 
 // Runs student code with a fresh globals dict and reports problems as JSON (message, line, column, details).
-// The helper's own frame is dropped from tracebacks, so they start at the student's code. While a program runs,
-// the modules that reach JavaScript (and through it the network) can't be imported: they are taken out of
-// sys.modules and their packages, and a finder refuses them. This is a clear message rather than a wall (Python
-// code can still find JavaScript objects); the worker's network APIs are blocked as well (see network.ts).
+// The helper's own frames are dropped from tracebacks, so they start at the student's code. input() is the built-in
+// one wrapped to hand its prompt to readStdin (through `_codeclass_note_prompt`, set by loadRuntime) before it reads,
+// so prompts can be told apart from output; readStdin can't ask Python itself, as input() releases the GIL while it
+// waits. While a program runs, the modules that reach JavaScript (and through it the network) can't be imported:
+// they are taken out of sys.modules and their packages, and a finder refuses them. This is a clear message rather
+// than a wall (Python code can still find JavaScript objects); the worker's network APIs are blocked as well (see
+// network.ts).
 const HELPER = String.raw`
 import builtins, importlib.abc, json, linecache, sys, traceback
 
 _codeclass_blocked = ("js", "pyodide_js", "pyodide.code", "pyodide.ffi", "pyodide.http", "pyodide_http", "micropip")
+_codeclass_builtin_input = builtins.input
+
+def _codeclass_input(*args, **kwargs):
+    # Only prompts str() can't run the program's own code for (input() runs it once already).
+    prompt = args[0] if len(args) == 1 and not kwargs else ""
+    _codeclass_note_prompt(str(prompt) if type(prompt) in (str, int, float, bool) else "")
+    try:
+        return _codeclass_builtin_input(*args, **kwargs)
+    finally:
+        _codeclass_note_prompt("")
+
+_codeclass_input.__name__ = _codeclass_input.__qualname__ = "input"
+_codeclass_input.__module__ = "builtins"
+_codeclass_input.__doc__ = _codeclass_builtin_input.__doc__
+builtins.input = _codeclass_input
 _codeclass_builtins = dict(builtins.__dict__)
 
 class _CodeclassBlocker(importlib.abc.MetaPathFinder):
@@ -81,6 +100,17 @@ def _codeclass_restore(hidden):
         if current.get(name, _codeclass_blocker) is not value:
             current[name] = value
 
+def _codeclass_without_input(tb):
+    # The traceback without input()'s wrapper frames.
+    while tb is not None and tb.tb_frame.f_code is _codeclass_input.__code__:
+        tb = tb.tb_next
+    entry = tb
+    while entry is not None:
+        while entry.tb_next is not None and entry.tb_next.tb_frame.f_code is _codeclass_input.__code__:
+            entry.tb_next = entry.tb_next.tb_next
+        entry = entry.tb_next
+    return tb
+
 def _codeclass_run(source):
     filename = "${SOURCE_NAME}"
     linecache.cache[filename] = (len(source), None, source.splitlines(True), filename)
@@ -109,6 +139,12 @@ def _codeclass_run(source):
         else:
             result = {"message": str(status)}
     except BaseException as exc:
+        seen = set()
+        chained = exc
+        while chained is not None and id(chained) not in seen:
+            seen.add(id(chained))
+            chained.__traceback__ = _codeclass_without_input(chained.__traceback__)
+            chained = chained.__cause__ if chained.__cause__ is not None else chained.__context__
         tb = exc.__traceback__
         if tb is not None:
             tb = tb.tb_next
@@ -163,9 +199,16 @@ function streamWriter(stream: 'stdout' | 'stderr') {
   };
 }
 
+/** The prompt of the input() call reading now ('' for other reads, such as sys.stdin.readline()). */
+let inputPrompt = '';
+
+function notePrompt(prompt: unknown): void {
+  inputPrompt = typeof prompt === 'string' ? prompt : '';
+}
+
 function readStdin(buffer: Uint8Array): number {
   if (!pendingInput || pendingOffset >= pendingInput.length) {
-    const line = activeIO?.readLine() ?? null;
+    const line = activeIO?.readLine(inputPrompt) ?? null;
     if (line === null) return 0;
     pendingInput = encoder.encode(`${line}\n`);
     pendingOffset = 0;
@@ -187,6 +230,7 @@ async function loadRuntime(): Promise<void> {
   py.setStdout({ write: streamWriter('stdout'), isatty: false });
   py.setStderr({ write: streamWriter('stderr'), isatty: false });
   py.setStdin({ read: readStdin, isatty: false });
+  py.globals.set('_codeclass_note_prompt', notePrompt);
   py.runPython(HELPER);
   runHelper = py.globals.get('_codeclass_run') as PyCallable;
   // Packages (prepare) still download from the Pyodide CDN; nothing else can be reached from here on.
@@ -235,6 +279,7 @@ export const pythonRunner: LanguageRunner = {
     activeIO = io;
     pendingInput = null;
     pendingOffset = 0;
+    inputPrompt = '';
     try {
       const result = runHelper!(code);
       return typeof result === 'string' ? failure(parseResult(result)) : OK;

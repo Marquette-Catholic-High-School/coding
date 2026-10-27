@@ -1,4 +1,4 @@
-import { gradeFromAutoScore, matchesSolution, solutionReleased, type Assignment, type Submission, type TestResult } from '@codeclass/shared';
+import { gradeFromAutoScore, solutionReleased, type Assignment, type Submission, type TestResult } from '@codeclass/shared';
 import {
   Alert,
   Avatar,
@@ -26,9 +26,11 @@ import { isAccountSwitch } from '../../auth/session';
 import { LateBadge, scoreColor, ScoreText, SolutionMatchBadge, SubmissionStatusBadge } from '../../components/badges';
 import { notifyError, notifySuccess } from '../../components/notify';
 import { RelativeTime } from '../../components/RelativeTime';
+import { useSameProgram } from '../../grading/useSameProgram';
 import { autogradeMethod, autogradeOneBlocker } from './autograde';
-import { autoScoreView } from './autoScoreView';
+import { autoScoreView, noTestsNote } from './autoScoreView';
 import { useAutograde } from './useAutograde';
+import { useSolutionFails } from './useSolutionFails';
 
 interface GradeValues {
   /** NumberInput yields '' while empty. */
@@ -79,7 +81,12 @@ export function GradeForm({
   const autograding = autograde.activity !== null;
   const handedIn = submission.status === 'submitted' || submission.status === 'graded';
   // Not-started work shows the starter code, which isn't the student's.
-  const matchesYourSolution = submission.status !== 'not_started' && matchesSolution(submission.code, assignment.solutionCode);
+  const matchesYourSolution = useSameProgram(
+    language,
+    submission.status !== 'not_started' ? submission.code : null,
+    assignment.solutionCode,
+    assignment.compareMode,
+  );
 
   const form = useForm<GradeValues>({
     mode: 'uncontrolled',
@@ -109,12 +116,17 @@ export function GradeForm({
     savedRef.current = { ...values };
   };
 
+  // Re-run tests the same program as the solution failed: it keeps full marks only if the solution fails them too.
+  const rerunFailed =
+    rerunResults && matchesYourSolution ? assignment.tests.filter((t) => !rerunResults.some((r) => r.testId === t.id && r.passed)) : [];
+  const solutionFails = useSolutionFails(assignment, language, rerunFailed.length > 0 ? rerunFailed : null);
   const auto = autoScoreView({
     tests: assignment.tests,
     testResults: submission.testResults,
     autoScore: submission.autoScore,
     rerunResults,
     matchesSolution: matchesYourSolution,
+    solutionFails,
   });
   const autoScore = auto.score;
   const resultsPatch = rerunResults ? { testResults: rerunResults, autoScore } : {};
@@ -290,8 +302,7 @@ export function GradeForm({
       {auto.empty ? (
         <Stack gap="xs" align="flex-start">
           <Text size="sm" c="dimmed">
-            This assignment has no tests, so there's no auto score
-            {assignment.hasSolution ? '. Autograde can still give full marks to work that matches your solution.' : '.'}
+            {noTestsNote(method, assignment)}
           </Text>
           {autogradeButton}
         </Stack>

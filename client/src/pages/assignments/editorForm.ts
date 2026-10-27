@@ -54,7 +54,7 @@ export function initialValues(assignment: Assignment | null, defaultLanguage: La
       allowLate: true,
       published: true,
       starterCode: defaultLanguage?.starterCode ?? '',
-      compareMode: 'trim',
+      compareMode: 'ignore-whitespace',
       tests: [],
       solutionCode: '',
       solutionVisibility: 'hidden',
@@ -125,7 +125,34 @@ export function fingerprint(values: EditorValues): string {
   return JSON.stringify(toInput(values, undefined));
 }
 
-/** Expected output from a program's stdout: a single trailing newline is dropped unless matching is exact. */
-export function expectedFromOutput(stdout: string, compareMode: CompareMode): string {
-  return compareMode === 'exact' ? stdout : stdout.replace(/\r?\n$/, '');
+/**
+ * Expected output from what a model solution printed without its input prompts (`RunOutcome.promptlessStdout`), so
+ * students can word those prompts their own way. A single trailing newline is dropped unless matching is exact.
+ */
+export function expectedFromOutput(output: string, compareMode: CompareMode): string {
+  return compareMode === 'exact' ? output : output.replace(/\r?\n$/, '');
+}
+
+/**
+ * An input prompt that's left out of the output tests compare (see `RunOutcome.promptlessStdout`), written the
+ * language's way: `input("Name: ")` for Python. Null when the language has no input prompts (SQL, web pages, or
+ * pseudocode without input).
+ */
+export function promptExample(language: Pick<Language, 'kind' | 'pseudocode'>): string | null {
+  switch (language.kind) {
+    case 'python':
+      return 'input("Name: ")';
+    case 'javascript':
+    case 'typescript':
+      return 'prompt("Name: ")';
+    case 'lua':
+      return 'io.write("Name: ") just before io.read()';
+    case 'pseudocode': {
+      const config = language.pseudocode;
+      const keyword = config?.keywords.input[0];
+      return config?.constructs.input && keyword ? `${keyword} "Name: ", name` : null;
+    }
+    default:
+      return null;
+  }
 }

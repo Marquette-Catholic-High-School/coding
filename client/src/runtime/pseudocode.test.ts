@@ -1,16 +1,18 @@
 import type { PseudoIO, PseudoRunOptions, PseudoRunResult } from '@codeclass/shared';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { diagnosticToRunError, runReplayAttempt, seededRandom, type ReplayState } from './lang/pseudocode';
+import { diagnosticToRunError, pseudocodeRunner, runReplayAttempt, seededRandom, type ReplayState } from './lang/pseudocode';
 
-// A stand-in engine: prints a random number, asks for a name (prompt passed to readLine) and an age.
-const engine = { catchesErrors: false };
+// A stand-in engine: prints a random number, asks for a name (prompt passed to readLine) and an age. Like older
+// engines, it leaves printing the prompts to the runner, unless `printsPrompts` (as the real one does).
+const engine = { catchesErrors: false, printsPrompts: false, prompt: 'Name? ' };
 
 vi.mock('@codeclass/shared/pseudocode', () => ({
   createPseudocodeConfig: () => ({}),
   runPseudocode: (_source: string, _config: unknown, io: PseudoIO, options?: PseudoRunOptions): PseudoRunResult => {
     const body = (): PseudoRunResult => {
       io.write(`Lucky number ${Math.floor((options?.random ?? Math.random)() * 1000)}\n`);
-      const name = io.readLine('Name? ');
+      if (engine.printsPrompts) io.write(engine.prompt);
+      const name = io.readLine(engine.prompt);
       if (name === null) {
         return { ok: false, steps: 1, error: { severity: 'error', message: 'There is no more input.', line: 2, column: 1, phase: 'runtime' } };
       }
@@ -43,6 +45,8 @@ function newState(stdin: string[]): ReplayState {
 describe('pseudocode replay', () => {
   beforeEach(() => {
     engine.catchesErrors = false;
+    engine.printsPrompts = false;
+    engine.prompt = 'Name? ';
   });
 
   it('stops at the input request and resumes without repeating output', () => {
@@ -79,6 +83,41 @@ describe('pseudocode replay', () => {
       recycle: false,
     });
     expect(text()).toMatch(/^Lucky number \d+\nName\? $/);
+  });
+
+  it('reports each read once, right after its prompt, however many times it is replayed', () => {
+    const state = newState(['Sam']);
+    let text = '';
+    const out = {
+      write: (stream: 'stdout' | 'stdin', chunk: string) => (text += stream === 'stdin' ? `<${chunk}>` : chunk),
+      read: (prompt: string) => (text += `|${prompt}|`),
+    };
+    expect(runReplayAttempt(state, out)).toBeNull();
+    state.typed.push('12');
+    expect(runReplayAttempt(state, out)).toEqual({ status: 'ok', error: null });
+    expect(text).toMatch(/^Lucky number \d+\nName\? \|Name\? \|<Sam\n>Hello Sam\nAge\? \|Age\? \|Age 12\n$/);
+    expect(state.reads).toBe(2);
+  });
+});
+
+describe('pseudocode runner', () => {
+  beforeEach(() => {
+    engine.printsPrompts = true;
+    engine.prompt = 'Name?\n';
+  });
+
+  it("prints a prompt the engine printed already only once, even one ending in a line break, and passes it on", async () => {
+    let text = '';
+    const prompts: (string | undefined)[] = [];
+    const io = {
+      write: (_stream: 'stdout' | 'stderr', chunk: string) => (text += chunk),
+      readLine: (prompt?: string) => (prompts.push(prompt), prompts.length === 1 ? 'Sam' : '3'),
+      pendingPrompt: () => '',
+      flush: () => {},
+    };
+    expect(await pseudocodeRunner.run('', io, { pseudocode: null })).toEqual({ status: 'ok', error: null });
+    expect(text).toMatch(/^Lucky number \d+\nName\?\nHello Sam\nAge\? Age 3\n$/);
+    expect(prompts).toEqual(['Name?\n', 'Age? ']);
   });
 
   it('uses lines typed before the input was ended first', () => {

@@ -1,4 +1,4 @@
-import type { TestCase } from '@codeclass/shared';
+import type { CompareMode, TestCase } from '@codeclass/shared';
 import { describe, expect, it, vi } from 'vitest';
 import { TIMEOUT_MESSAGE } from './protocol';
 import { MAX_TEST_OUTPUT_CHARS, outcomeErrorText, runnerFailed, runTestsWith, testResultFromOutcome, type StartRun } from './testRunner';
@@ -11,7 +11,8 @@ function test(id: string, input: string, expectedOutput: string): TestCase {
 }
 
 function outcome(partial: Partial<RunOutcome>): RunOutcome {
-  return { status: 'ok', error: null, stdout: '', durationMs: 12.4, started: true, readInput: false, ...partial };
+  const stdout = partial.stdout ?? '';
+  return { status: 'ok', error: null, stdout, promptlessStdout: stdout, durationMs: 12.4, started: true, readInput: false, ...partial };
 }
 
 /** A fake runner that "doubles" its first input line. */
@@ -36,6 +37,25 @@ describe('runTestsWith', () => {
       { testId: 'b', passed: false, actualOutput: '10\n', error: null, durationMs: 12 },
     ]);
     expect(progress).toEqual([0, 1]);
+  });
+
+  it('reports each test\'s output without input prompts as it finishes', async () => {
+    const asker: StartRun = (_target, _code, options?: RunOptions) => {
+      const n = Number(options?.stdin?.[0] ?? 0);
+      return {
+        done: Promise.resolve(outcome({ stdout: `Number? ${n * 2}\n`, promptlessStdout: `${n * 2}\n`, readInput: true })),
+        stop() {},
+        provideInput() {},
+        endInput() {},
+      };
+    };
+    const progress: string[] = [];
+    const results = await runTestsWith(asker, target, 'code', [test('a', '2', '4'), test('b', '5', 'Number? 10')], {
+      compareMode: 'trim',
+      onProgress: ({ result, promptlessOutput }) => progress.push(`${result.testId}:${promptlessOutput}`),
+    });
+    expect(results.map((r) => r.passed)).toEqual([true, true]);
+    expect(progress).toEqual(['a:4\n', 'b:10\n']);
   });
 
   it('honours a custom timeout', async () => {
@@ -126,6 +146,25 @@ describe('test results', () => {
     expect(outcomeErrorText(outcome({ status: 'error', error: { message: 'Oops', hint: 'Did you mean "OUTPUT"?' } }))).toBe(
       'Oops Did you mean "OUTPUT"?',
     );
+  });
+
+  it('pass when the output matches with or without its input prompts', () => {
+    const asked = outcome({ stdout: 'Enter a number: 8\n', promptlessStdout: '8\n', readInput: true });
+    const passes = (expected: string, mode: CompareMode = 'trim') => testResultFromOutcome(test('a', '4', expected), asked, mode).passed;
+    expect(passes('8')).toBe(true);
+    expect(passes('Enter a number: 8')).toBe(true);
+    expect(passes('Enter a number:8', 'ignore-whitespace')).toBe(true);
+    expect(passes('8\n', 'exact')).toBe(true);
+    expect(passes('Enter a number:8')).toBe(false);
+    expect(passes('9')).toBe(false);
+    expect(passes('')).toBe(false);
+    // The stored output is what the program printed, prompts and all.
+    expect(testResultFromOutcome(test('a', '4', '8'), asked, 'trim').actualOutput).toBe('Enter a number: 8\n');
+  });
+
+  it('fail when the program errors, even if the output without prompts matches', () => {
+    const failed = outcome({ status: 'error', stdout: 'Number? ', promptlessStdout: '', error: { message: 'There is no more input.' } });
+    expect(testResultFromOutcome(test('a', '', ''), failed, 'trim').passed).toBe(false);
   });
 
   it('compares the full output but stores a shortened copy', () => {

@@ -1,48 +1,63 @@
-import type { Assignment, LanguageKind, SubmissionRow } from '@codeclass/shared';
-import { Alert, Button, Checkbox, Group, List, Modal, Radio, Stack, Text } from '@mantine/core';
-import { IconAlertTriangle, IconRobot } from '@tabler/icons-react';
+import type { Assignment, SubmissionRow } from '@codeclass/shared';
+import { Alert, Button, Checkbox, Group, List, Loader, Modal, Radio, Stack, Text } from '@mantine/core';
+import { IconAlertTriangle, IconPencil, IconRobot } from '@tabler/icons-react';
 import { useState } from 'react';
+import { Link } from 'react-router';
 import cards from '../../components/cards.module.css';
+import type { RunTarget } from '../../runtime';
 import {
   autogradeButtonLabel,
   autogradeRules,
   autogradeScopeOptions,
   autogradeTargets,
+  autogradeWarning,
   DEFAULT_AUTOGRADE_OPTIONS,
   effectiveScope,
+  runsSolution,
   type AutogradeMethod,
   type AutogradeOptions,
   type AutogradeScope,
+  type PreparedAutograde,
 } from './autograde';
+import { useAutogradePreparation } from './useAutograde';
 
 interface AutogradeModalProps {
   assignment: Assignment;
-  kind: LanguageKind;
+  language: RunTarget;
   method: AutogradeMethod;
   rows: SubmissionRow[];
-  /** Starts autograding with the chosen options (the modal closes). */
-  onStart: (options: AutogradeOptions) => void;
+  /**
+   * Starts autograding with the chosen options (the modal closes), from the run the modal got ready when it finished
+   * in time (null = the run gets ready itself).
+   */
+  onStart: (options: AutogradeOptions, prepared: PreparedAutograde | null) => void;
 }
 
-/** "Autograde": explains how scores are worked out for this assignment and asks which work to grade. */
+/**
+ * "Autograde": explains how scores are worked out for this assignment, warns about a solution autograde can't use
+ * (it runs the solution when the modal opens) and asks which work to grade.
+ */
 export function AutogradeModal({ opened, onClose, onStart, ...props }: AutogradeModalProps & { opened: boolean; onClose: () => void }) {
   return (
     <Modal opened={opened} onClose={onClose} title="Autograde" size="lg">
       <AutogradeOptionsForm
         {...props}
         onCancel={onClose}
-        onStart={(options) => {
+        onStart={(options, prepared) => {
           onClose();
-          onStart(options);
+          onStart(options, prepared);
         }}
       />
     </Modal>
   );
 }
 
-function AutogradeOptionsForm({ assignment, kind, method, rows, onCancel, onStart }: AutogradeModalProps & { onCancel: () => void }) {
+function AutogradeOptionsForm({ assignment, language, method, rows, onCancel, onStart }: AutogradeModalProps & { onCancel: () => void }) {
   const [chosenScope, setScope] = useState<AutogradeScope>(DEFAULT_AUTOGRADE_OPTIONS.scope);
   const [setGrades, setSetGrades] = useState(DEFAULT_AUTOGRADE_OPTIONS.setGrades);
+  // The solution runs as soon as the modal opens, so what's wrong with it shows before anything is graded.
+  const prepared = useAutogradePreparation(assignment, language, method);
+  const warning = prepared && autogradeWarning(prepared, setGrades);
   // Without grades being set, "replacing every grade" isn't offered (it would do the same as all handed-in work).
   const scope = effectiveScope(chosenScope, setGrades);
   const waiting = autogradeTargets(rows, 'waiting').length;
@@ -57,15 +72,37 @@ function AutogradeOptionsForm({ assignment, kind, method, rows, onCancel, onStar
           How scores are worked out
         </Text>
         <List size="sm" spacing={4}>
-          {autogradeRules(method, kind, assignment.points, setGrades).map((rule) => (
+          {autogradeRules(method, language.kind, assignment.points, setGrades, assignment.compareMode).map((rule) => (
             <List.Item key={rule}>{rule}</List.Item>
           ))}
         </List>
       </div>
 
+      {!prepared && runsSolution(method) && (
+        <Group gap="xs" wrap="nowrap">
+          <Loader size="xs" />
+          <Text size="sm" c="dimmed">
+            Checking your solution…
+          </Text>
+        </Group>
+      )}
+
+      {warning && (
+        <Alert variant="light" color="yellow" icon={<IconAlertTriangle size={18} />} title={warning.title}>
+          <Stack gap="sm" align="flex-start">
+            <Text size="sm">{warning.sentences.join(' ')}</Text>
+            {warning.editAssignment && (
+              <Button component={Link} to={`/assignments/${assignment.id}/edit`} size="sm" variant="default" leftSection={<IconPencil size={18} />}>
+                Edit assignment
+              </Button>
+            )}
+          </Stack>
+        </Alert>
+      )}
+
       {method.solution && assignment.solutionVisibility === 'visible' && (
         <Alert variant="light" color="yellow" icon={<IconAlertTriangle size={18} />} title="Students can see your solution">
-          <Text size="sm">Work that matches it doesn't show a student wrote it themselves.</Text>
+          <Text size="sm">Work that's the same program as it doesn't show a student wrote it themselves.</Text>
         </Alert>
       )}
 
@@ -122,7 +159,7 @@ function AutogradeOptionsForm({ assignment, kind, method, rows, onCancel, onStar
         <Button variant="default" onClick={onCancel}>
           Cancel
         </Button>
-        <Button leftSection={<IconRobot size={18} />} disabled={count === 0} onClick={() => onStart({ scope, setGrades })}>
+        <Button leftSection={<IconRobot size={18} />} disabled={count === 0} onClick={() => onStart({ scope, setGrades }, prepared)}>
           {autogradeButtonLabel(count)}
         </Button>
       </Group>

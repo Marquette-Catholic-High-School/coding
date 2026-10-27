@@ -129,8 +129,19 @@ Contract in `runtime/types.ts` + `runtime/index.ts` + `runtime/useCodeRunner.ts`
   Capped at 1 MB ("Output limit reached" system line). `useCodeRunner` keeps the transcript
   in a ref, publishes it at most once per animation frame and merges the oldest segments past 5000. Errors carry
   line numbers mapped to the student's source.
-- `runTests`: for each test, non-interactive run with `inputLines(test.input)` as stdin, compare stdout with
-  `outputsMatch(actual, expected, compareMode)`; passed = status ok && match; timeouts say "Took too long — is
+- Prompts: every read tells the worker the prompt its input call printed (`RunIO.readLine(prompt)`: Python's
+  `input("…")` through a wrapper that hands the prompt over before it reads, JavaScript's `prompt`/`input`/
+  `rl.question`, pseudocode's `INPUT "…", x`; Lua's `io.read` guesses: the unfinished line, unless input was read on
+  it already). The worker reports where each prompt sits in stdout and `RunOutcome.promptlessStdout` is stdout
+  without them; the console is unchanged. A prompt printed on a line of its own (`print("Name?")` then `input()`)
+  is output.
+- Compare modes (`normalizeOutput`, `COMPARE_MODE_LABELS`/`_DESCRIPTIONS`): line endings are always unified;
+  `exact` ignores only one final line break; the others treat Unicode spaces as spaces and drop zero-width ones;
+  `trim` ignores spaces at line ends and every blank line; `ignore-whitespace` (the default for new assignments)
+  removes all whitespace, line breaks included ("Total:8" = "Total: 8"); `ignore-case` also lowercases.
+- `runTests`: for each test, non-interactive run with `inputLines(test.input)` as stdin, compare stdout — or
+  `promptlessStdout` — with `outputsMatch(actual, expected, compareMode)`; passed = status ok && either matches
+  (`actualOutput` stays stdout); timeouts say "Took too long — is
   there a loop that never ends?". `RunOutcome.started` (the worker reached the running phase) and `readInput` (the
   program asked for a line, even where running out isn't an error: JavaScript's prompt(), Lua's io.read()) let
   callers tell the program's results from the code runner's: `runnerFailed(outcome)` = errored before it started
@@ -380,15 +391,17 @@ CALL, MOD/DIV, LENGTH, `&` concatenation),
   due date switches it to "Teachers only" with a notice (setting one again switches it back); client validation and
   the server's `fieldErrors.solutionVisibility` show under the cards; for kinds with tests "Check solution" runs it
   against every test incl. hidden via `runTests` with the compare mode and lists the failing ones); tests editor with
-  compare mode, hidden/points per test, and "Fill expected output from a model solution" which starts from the
-  solution (else the starter code), runs it against each input via `runTests`/`startRun` and can keep the code it ran
-  as the solution; "Preview as student" in a full-screen modal `CodeWorkspace` showing the solution, or its pending
+  compare mode (with its description), hidden/points per test, and "Fill expected output from a model solution"
+  which starts from the solution (else the starter code), runs it against each input via `runTests`/`startRun`,
+  fills from `promptlessStdout` (`promptExample()` names the language's prompt form in the hint) and can keep the
+  code it ran as the solution; "Preview as student" in a full-screen modal `CodeWorkspace` showing the solution, or its pending
   note, as a student who hasn't started would see it now (`solutionView.ts`); sticky save bar; `useBlocker` for
   unsaved changes; `editorForm.ts` maps form ⇄ API, solution fields included), `AssignmentOverviewPage` (teacher view
   of `/assignments/:id`: header with language/draft/due badges and `SolutionBadge` (who can see it, description in a
   tooltip) when there is a solution, Edit + Preview + "Autograde", stat tiles, instructions accordion, students table
-  filterable All / To grade / Missing with a "Matches solution" badge on handed-in work whose code `matchesSolution`
-  and an inline `GradeCell` per row), `GradingPage` (read-only `CodeWorkspace` with all tests incl. hidden and the
+  filterable All / To grade / Missing with a "Matches solution" badge on handed-in work that is the same program as
+  the solution (`useSameProgram`, cached per language, compare mode, solution and code) and an inline `GradeCell`
+  per row), `GradingPage` (read-only `CodeWorkspace` with all tests incl. hidden and the
   solution; side card with status, late, code matches solution, auto score (`autoScoreView.ts`), "Use auto-score"
   (`gradeFromAutoScore`), grade `NumberInput` out of points (says when autograde set it; saving makes it a hand
   grade), feedback, Save grade, Return for revision, prev/next student).
@@ -401,14 +414,29 @@ CALL, MOD/DIV, LENGTH, `&` concatenation),
   this assignment and picks the work — waiting to be graded / all handed-in work (default; regrades autograde's own
   grades, keeps hand grades) / all handed-in work replacing every grade — and "Set grades from the scores" (off =
   only refresh results and auto scores). One submission at a time in this browser (fresh worker, abortable, one
-  updating notification). Score: code that `matchesSolution` ⇒ 100 (tests still run and are stored); else the
-  weighted share of every test incl. hidden; with no tests the solution runs once without input and work that
-  finishes `ok` printing the same (`outputsMatch`, compare mode) without reading input ⇒ 100, anything else no score
-  — unless the solution itself can't give a reference (needs input, errors, prints nothing), when only exact matches
-  score. A grade = `gradeFromAutoScore`, saved with `status: 'graded', autoGraded: true` only for work the scope may
+  updating notification). Score: the same program as the solution (`sameProgram`, below) ⇒ 100 — with tests, only
+  if it also passes every test the solution passes (`passesSolutionTests`; the tests still run and are stored); else
+  the weighted share of every test incl. hidden; with no tests the solution runs once without input and work that
+  finishes `ok` printing the same (`outputsMatch` on stdout or `promptlessStdout`, compare mode) without reading
+  input ⇒ 100, anything else no score with an `unscoredReason` (`student-input`, `student-error`, `student-timeout`,
+  `output-differs`, `no-reference`, `not-runnable`) — when the solution itself can't give a reference
+  (`ReferenceProblem`: asks for input, errors, times out, prints nothing), only the same program scores and the
+  message says what to do (add tests / fix the solution). Before grading, with tests and a solution, the solution
+  runs on the tests once (also when the modal opens, shown as a warning): failures are reported ("Your solution
+  fails 1 of 3 tests — …", pointing at the expected output, or at the test's input when it stopped with an error).
+  A grade = `gradeFromAutoScore`, saved with `status: 'graded', autoGraded: true` only for work the scope may
   (re)grade; a regrade that can no longer score autograde's own grade sets it back to submitted; a runner failure
   leaves the work untouched. Every PATCH sends `expectedUpdatedAt`; a 409 counts as "changed while autograding".
-  The summary counts graded / left for you / hand grades kept / grades taken off / changed / couldn't check / failed.
+  The summary counts graded / left for you (by reason) / hand grades kept / grades taken off / changed / couldn't
+  check / failed; it is yellow and stays open when anything was left ungraded or the solution had a problem.
+- Same program (`client/src/grading/sameProgram.ts`, parsers loaded with dynamic imports; pseudocode through
+  `@codeclass/shared/pseudocode/fingerprint`): both programs are parsed (pseudocode with the real engine parser;
+  Lezer for JS/TS, Python, HTML with its CSS/JS, SQL; a small tokenizer for Lua) into a fingerprint without
+  positions, whitespace, comments, keyword spelling or quote style; equal fingerprints ⇒ same program. Quoted text
+  counts exactly, except text the program prints directly (`print`, `console.log`, `OUTPUT`, input prompts, …),
+  which follows the compare mode; web page text is compared as the browser shows it. Python with indentation
+  CPython rejects doesn't parse. One side failing to parse ⇒ not the same; both failing ⇒ a whitespace-safe text
+  comparison. A blank solution matches nothing.
 - `GradeCell`: `NumberInput` (0..points, 1 decimal, strict clamp, no arrow-key stepping) + "/ points" + an "Auto"
   badge for autograded grades. Saves on blur or Enter when changed (Enter / ↑ / ↓ move between rows), Escape or an
   empty box restores the saved grade; PATCH `{ grade, status: 'graded', expectedUpdatedAt }` with the `updatedAt`

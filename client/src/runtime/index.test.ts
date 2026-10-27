@@ -351,3 +351,71 @@ describe('run outcomes', () => {
     expect(onRunnerError).toHaveBeenCalledWith(expect.stringContaining('the worker failed to start'));
   });
 });
+
+describe('input prompts', () => {
+  it('are left out of promptlessStdout but stay in stdout and the console', async () => {
+    const rt = await load(false);
+    const shown: OutputChunk[] = [];
+    const handle = rt.startRun({ kind: 'pseudocode' }, 'code', { stdin: ['4', '5'], onOutput: (c) => shown.push(c) });
+    const worker = FakeWorker.all[0]!;
+    const { id } = worker.lastRun();
+    const output = (stream: OutputChunk['stream'], chunkText: string, batch: number) =>
+      worker.emit({ type: 'output', id, batch, chunks: [{ stream, text: chunkText }] });
+    output('stdout', 'Sums\nFirst: ', 1);
+    worker.emit({ type: 'prompt', id, start: 5, end: 12 });
+    output('stdin', '4\n', 2);
+    // A prompt can arrive before its text when the worker holds output back.
+    worker.emit({ type: 'prompt', id, start: 12, end: 20 });
+    output('stdout', 'Second: ', 3);
+    output('stdin', '5\n', 4);
+    output('stdout', 'Total: 9\n', 5);
+    worker.finish();
+    const outcome = await handle.done;
+    expect(outcome.stdout).toBe('Sums\nFirst: Second: Total: 9\n');
+    expect(outcome.promptlessStdout).toBe('Sums\nTotal: 9\n');
+    expect(text(shown)).toBe('Sums\nFirst: 4\nSecond: 5\nTotal: 9\n');
+  });
+
+  it('are counted in output read from the tail when a run is stopped', async () => {
+    const rt = await load(true);
+    const handle = rt.startRun({ kind: 'python' }, 'code', { stdin: ['Sam'] });
+    const worker = FakeWorker.all[0]!;
+    const { id, tail } = worker.lastRun();
+    const out = new OutputBuffer({
+      send: (chunks, batch) => worker.emit({ type: 'output', id, batch, chunks }),
+      tail: new OutputTailWriter(tail!),
+      burst: 0,
+      now: () => 0,
+      schedule: () => 0,
+      cancel: () => {},
+    });
+    out.write('stdout', 'Name? ');
+    const prompt = out.takePrompt()!;
+    worker.emit({ type: 'prompt', id, ...prompt });
+    out.echoInput('Sam');
+    out.write('stdout', 'Hi Sam\n');
+    out.write('stdout', 'Age? ');
+    // Nothing was sent: the program is stuck before it asks for the age.
+    handle.stop();
+    const outcome = await handle.done;
+    expect(outcome.stdout).toBe('Name? Hi Sam\nAge? ');
+    expect(outcome.promptlessStdout).toBe('Hi Sam\nAge? ');
+  });
+
+  it('that never arrived are ignored', async () => {
+    const rt = await load(false);
+    const handle = rt.startRun({ kind: 'javascript' }, 'code');
+    const worker = FakeWorker.all[0]!;
+    const { id } = worker.lastRun();
+    worker.emit({ type: 'output', id, batch: 1, chunks: [{ stream: 'stdout', text: 'a\nb' }] });
+    worker.emit({ type: 'prompt', id, start: 2, end: 6 });
+    worker.emit({ type: 'prompt', id, start: 6, end: 9 });
+    handle.stop();
+    expect(await handle.done).toMatchObject({ stdout: 'a\nb', promptlessStdout: 'a\n' });
+  });
+
+  it('are absent from runs that never started', async () => {
+    const rt = await load(false);
+    expect(await rt.startRun({ kind: 'web' }, '<p>').done).toMatchObject({ stdout: '', promptlessStdout: '' });
+  });
+});

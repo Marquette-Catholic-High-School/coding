@@ -4,10 +4,10 @@
 // everything here is pure, with the code runner and the save passed in, so it can be unit-tested.
 
 import {
+  COMPARE_MODE_LABELS,
   computeAutoScore,
   gradeFromAutoScore,
   kindSupportsTests,
-  matchesSolution,
   outputsMatch,
   type Assignment,
   type CompareMode,
@@ -19,13 +19,19 @@ import {
   type TestResult,
 } from '@codeclass/shared';
 import { ApiError, errorMessage } from '../../api/client';
+import { sameProgram, type SameProgramTarget } from '../../grading/sameProgram';
 import { runnerFailed, type RunOutcome } from '../../runtime';
+import { summarizeSolutionCheck, type SolutionCheck } from './solutionView';
+
+const num = (n: number) => n.toLocaleString('en-US');
+const plural = (n: number, one: string, many = `${one}s`) => `${num(n)} ${n === 1 ? one : many}`;
+const sentence = (s: string) => (/[.!?]$/.test(s) ? s : `${s}.`);
 
 /** How autograde scores work for one assignment. */
 export interface AutogradeMethod {
   /** Run every test (hidden ones included); the score is the weighted share passed. */
   tests: boolean;
-  /** Work that matches the teacher's solution gets full marks. */
+  /** Work that is the same program as the teacher's solution (`sameProgram`) gets full marks. */
   solution: boolean;
   /** No tests: run the solution and each submission without input, and give full marks when they print the same. */
   output: boolean;
@@ -69,13 +75,27 @@ export function mayAutograde(submission: Submission, scope: AutogradeScope): boo
   return submission.status === 'graded' && (submission.autoGraded || scope === 'replace-all');
 }
 
+/**
+ * Why autograde couldn't score a submission (no tests; with tests every submission gets the share it passes):
+ * - `student-input`: it asks for input, and work runs without any, so its output says nothing about it;
+ * - `student-error`: it stopped with an error when run without input;
+ * - `student-timeout`: it didn't finish in time;
+ * - `output-differs`: it printed something different from the solution;
+ * - `no-reference`: the solution's own output can't be compared with (see `ReferenceProblem`);
+ * - `not-runnable`: work in this language can't be run here (web pages), and it isn't the same program.
+ */
+export type UnscoredReason = 'student-input' | 'student-error' | 'student-timeout' | 'output-differs' | 'no-reference' | 'not-runnable';
+
 /** What autograde worked out for one submission. */
 export interface AutogradeResult {
   /** 0–100, or null when autograde can't score this work (it's left for the teacher). */
   score: number | null;
   /** Results of every test, hidden ones included; absent when the assignment's tests weren't run. */
   testResults?: TestResult[];
+  /** The work is the same program as the teacher's solution. */
   matchesSolution: boolean;
+  /** Why `score` is null; absent when it isn't, or when the code runner failed (`runnerError`). */
+  unscoredReason?: UnscoredReason;
   /**
    * The code runner itself failed (the language couldn't load or start), so this work wasn't really checked: it's
    * left exactly as it is rather than scored as if every test failed.
@@ -83,19 +103,29 @@ export interface AutogradeResult {
   runnerError?: string;
 }
 
+/** What a run printed, with and without its input prompts (see `RunOutcome.promptlessStdout`). */
+export type PrintedOutput = Pick<RunOutcome, 'stdout' | 'promptlessStdout'>;
+
 /** What scoring a submission needs to know about the assignment. */
 export interface AutogradeSetup {
   method: AutogradeMethod;
+  /** The assignment's language: how code is read to tell whether it's the same program as the solution. */
+  target: SameProgramTarget;
   /** Every test, hidden ones included. */
   tests: TestCase[];
   compareMode: CompareMode;
   /** The teacher's solution ('' = none). */
   solutionCode: string;
-  /** What the solution printed when run without input; null when output isn't compared (see `referenceProblem`). */
-  referenceOutput: string | null;
   /**
-   * The code runner didn't start when the solution ran (output comparison only): work that doesn't match the
-   * solution exactly can't be checked. Null otherwise.
+   * Tests and a solution: the ids of the tests the solution itself fails (`PreparedAutograde.solutionCheck`). Absent
+   * or null when that isn't known: then the same program as the solution has to pass every test for full marks.
+   */
+  solutionFails?: readonly string[] | null;
+  /** What the solution printed when run without input; null when output isn't compared (see `referenceProblem`). */
+  referenceOutput: PrintedOutput | null;
+  /**
+   * The code runner didn't start when the solution ran (output comparison only): work that isn't the same program
+   * as the solution can't be checked. Null otherwise.
    */
   runnerError: string | null;
 }
@@ -120,88 +150,209 @@ function runnerErrorMessage(outcome: RunOutcome): string {
   return outcome.error?.message ?? "The code runner didn't start.";
 }
 
+/** Why a run without input says nothing about the work: it asked for input, or didn't finish. Null when it finished. */
+function studentProblem(outcome: RunOutcome): UnscoredReason | null {
+  // Checked first: running out of input is an error in some languages, and the error isn't the work's fault.
+  if (outcome.readInput) return 'student-input';
+  if (outcome.status === 'timeout') return 'student-timeout';
+  return outcome.status === 'ok' ? null : 'student-error';
+}
+
 /**
- * Scores one submission: full marks when it matches the solution (the tests still run, so their results are
- * stored); otherwise the weighted share of tests passed; with no tests, full marks when it prints what the solution
- * prints, and no score when it doesn't (or when it asks for input). When the code runner itself fails, the work
- * isn't scored (`runnerError`), except that an exact match with the solution still gets full marks.
+ * Output that matches the solution's under the compare mode, with or without input prompts (only work that reads no
+ * input is compared, so today the two are the same; comparing both keeps this right if that changes).
+ */
+function sameOutput(output: PrintedOutput, reference: PrintedOutput, mode: CompareMode): boolean {
+  return outputsMatch(output.stdout, reference.stdout, mode) || outputsMatch(output.promptlessStdout, reference.promptlessStdout, mode);
+}
+
+/**
+ * Whether work that is the same program as the solution passes every test the solution passes (`solutionFails` =
+ * the ids of the tests the solution fails; null = not known, so every test), as the same program must: then its
+ * full marks stand even where a test the solution fails too (a wrong expected output) would lower its score. Work
+ * that only looks like the solution to `sameProgram` doesn't get full marks over tests it fails.
+ */
+export function passesSolutionTests(
+  tests: Pick<TestCase, 'id'>[],
+  results: Pick<TestResult, 'testId' | 'passed'>[],
+  solutionFails: readonly string[] | null | undefined,
+): boolean {
+  const fails = new Set(solutionFails ?? []);
+  const passed = new Set(results.filter((r) => r.passed).map((r) => r.testId));
+  return tests.every((t) => passed.has(t.id) || fails.has(t.id));
+}
+
+/**
+ * Scores one submission: full marks when it's the same program as the solution (`sameProgram`; the tests still run,
+ * so their results are stored, and it must pass every test the solution passes — `passesSolutionTests`); otherwise
+ * the weighted share of tests passed; with no tests, full marks when it prints what the solution prints, and no
+ * score (with the reason) when it doesn't, asks for input or doesn't finish. When the code runner itself fails, the
+ * work isn't scored (`runnerError`), except that the same program as the solution still gets full marks.
  */
 export async function scoreSubmission(code: string, setup: AutogradeSetup, runner: AutogradeRunner): Promise<AutogradeResult> {
-  const matches = setup.method.solution && matchesSolution(code, setup.solutionCode);
+  const matches = setup.method.solution && (await sameProgram(setup.target, code, setup.solutionCode, setup.compareMode));
   if (setup.method.tests) {
     const run = await runner.runTests(code);
     if (run.runnerError) {
       // Every test "failed" because nothing ran; storing those results would score the work 0.
       return matches ? { score: 100, matchesSolution: true } : { score: null, matchesSolution: false, runnerError: run.runnerError };
     }
-    return { score: matches ? 100 : computeAutoScore(setup.tests, run.results), testResults: run.results, matchesSolution: matches };
+    const full = matches && passesSolutionTests(setup.tests, run.results, setup.solutionFails);
+    return { score: full ? 100 : computeAutoScore(setup.tests, run.results), testResults: run.results, matchesSolution: full };
   }
   if (matches) return { score: 100, matchesSolution: true };
-  if (setup.method.output && setup.runnerError) return { score: null, matchesSolution: false, runnerError: setup.runnerError };
-  if (setup.method.output && setup.referenceOutput != null) {
-    const outcome = await runner.runProgram(code);
-    if (runnerFailed(outcome)) return { score: null, matchesSolution: false, runnerError: runnerErrorMessage(outcome) };
-    // Work that asks for input printed what it did without any, so its output says nothing about it.
-    const same = outcome.status === 'ok' && !outcome.readInput && outputsMatch(outcome.stdout, setup.referenceOutput, setup.compareMode);
-    return { score: same ? 100 : null, matchesSolution: false };
-  }
-  return { score: null, matchesSolution: false };
+  if (!setup.method.output) return { score: null, matchesSolution: false, unscoredReason: 'not-runnable' };
+  if (setup.runnerError) return { score: null, matchesSolution: false, runnerError: setup.runnerError };
+  if (setup.referenceOutput == null) return { score: null, matchesSolution: false, unscoredReason: 'no-reference' };
+  const outcome = await runner.runProgram(code);
+  if (runnerFailed(outcome)) return { score: null, matchesSolution: false, runnerError: runnerErrorMessage(outcome) };
+  // Work that asks for input printed what it did without any, so its output says nothing about it.
+  const problem = studentProblem(outcome) ?? (sameOutput(outcome, setup.referenceOutput, setup.compareMode) ? null : 'output-differs');
+  return problem ? { score: null, matchesSolution: false, unscoredReason: problem } : { score: 100, matchesSolution: false };
 }
 
 /**
  * Why the solution's output can't be compared with the students':
  * - `runner`: the code runner didn't start, so nothing could be run;
- * - `failed`: it didn't finish without input — it asks for input (even in languages where that isn't an error,
- *   such as JavaScript's prompt()), or it has an error;
+ * - `input`: it asks for input (even in languages where running out isn't an error, such as JavaScript's prompt());
+ * - `error`: it stops with an error;
+ * - `timeout`: it doesn't finish in time;
  * - `silent`: it prints nothing (an empty program would match it).
  * Null when it can be compared.
  */
-export type ReferenceProblem = 'runner' | 'failed' | 'silent';
+export type ReferenceProblem = 'runner' | 'input' | 'error' | 'timeout' | 'silent';
 
 export function referenceProblem(outcome: RunOutcome): ReferenceProblem | null {
   if (runnerFailed(outcome)) return 'runner';
-  if (outcome.status !== 'ok' || outcome.readInput) return 'failed';
+  if (outcome.readInput) return 'input';
+  if (outcome.status === 'timeout') return 'timeout';
+  if (outcome.status !== 'ok') return 'error';
   return outcome.stdout.trim() === '' ? 'silent' : null;
 }
 
 /** What the solution's run without input means for the setup: what to compare with, or why nothing can be. */
 export function referenceSetup(outcome: RunOutcome): {
   problem: ReferenceProblem | null;
-  referenceOutput: string | null;
+  referenceOutput: PrintedOutput | null;
   runnerError: string | null;
 } {
   const problem = referenceProblem(outcome);
   return {
     problem,
-    referenceOutput: problem === null ? outcome.stdout : null,
+    referenceOutput: problem === null ? { stdout: outcome.stdout, promptlessStdout: outcome.promptlessStdout } : null,
     runnerError: problem === 'runner' ? runnerErrorMessage(outcome) : null,
   };
 }
 
+/** A run, ready to score submissions. */
+export interface PreparedAutograde {
+  /** What every submission is scored with. */
+  setup: AutogradeSetup;
+  /** Output comparison only: why the solution's output can't be compared with the students' (null when it can). */
+  reference: ReferenceProblem | null;
+  /**
+   * Tests and a solution: the solution's own results on the tests, so a test it fails (a mistake in an expected
+   * output, say) can be pointed out. Null when it wasn't checked, or the code runner failed while checking it.
+   */
+  solutionCheck: SolutionCheck | null;
+}
+
 /**
- * Gets a run ready: the setup every submission is scored with and, when output is compared, why the solution's
- * output can't be (null when it can). With output comparison, this runs the solution once without input.
+ * Gets a run ready: the setup every submission is scored with, and what's wrong with the solution as a reference.
+ * With output comparison, this runs the solution once without input; with tests and a solution, it runs the
+ * solution on the tests.
  */
 export async function prepareAutograde(
   assignment: Pick<Assignment, 'tests' | 'compareMode' | 'solutionCode'>,
   method: AutogradeMethod,
-  runner: Pick<AutogradeRunner, 'runProgram'>,
+  target: SameProgramTarget,
+  runner: AutogradeRunner,
   signal?: AbortSignal,
-): Promise<{ setup: AutogradeSetup; reference: ReferenceProblem | null }> {
+): Promise<PreparedAutograde> {
   const setup: AutogradeSetup = {
     method,
+    target,
     tests: assignment.tests,
     compareMode: assignment.compareMode,
     solutionCode: assignment.solutionCode ?? '',
     referenceOutput: null,
     runnerError: null,
   };
-  if (!method.output) return { setup, reference: null };
+  const prepared: PreparedAutograde = { setup, reference: null, solutionCheck: null };
+  if (method.tests && method.solution && setup.solutionCode.trim() !== '') {
+    const run = await runner.runTests(setup.solutionCode);
+    if (signal?.aborted || run.runnerError) return prepared;
+    const solutionCheck = summarizeSolutionCheck(setup.tests, run.results);
+    return { ...prepared, setup: { ...setup, solutionFails: solutionCheck.failing.map((f) => f.id) }, solutionCheck };
+  }
+  if (!method.output) return prepared;
   // What the solution prints is what each submission's output is compared with.
   const outcome = await runner.runProgram(setup.solutionCode);
-  if (signal?.aborted) return { setup, reference: null };
+  if (signal?.aborted) return prepared;
   const solutionRun = referenceSetup(outcome);
-  return { setup: { ...setup, referenceOutput: solutionRun.referenceOutput, runnerError: solutionRun.runnerError }, reference: solutionRun.problem };
+  return {
+    ...prepared,
+    setup: { ...setup, referenceOutput: solutionRun.referenceOutput, runnerError: solutionRun.runnerError },
+    reference: solutionRun.problem,
+  };
+}
+
+/** Getting a run ready runs the solution: once without input (no tests), or on the tests (tests and a solution). */
+export function runsSolution(method: AutogradeMethod): boolean {
+  return method.output || (method.tests && method.solution);
+}
+
+/** The solution fails some of the tests it was checked against. */
+export function solutionFailsTests(check: SolutionCheck | null): check is SolutionCheck {
+  return check != null && check.failing.length > 0;
+}
+
+/** How much of a test's error to quote. */
+const MAX_ERROR_CHARS = 160;
+
+/**
+ * What to check for each test the solution fails: the expected output of a test it ran to the end of (it printed
+ * something else), and the input of a test it stopped on (an error, such as running out of input, or a time-out),
+ * quoting why.
+ */
+function failingTestAdvice(check: SolutionCheck): string[] {
+  const wrongOutput = check.failing.filter((f) => f.error == null);
+  const stopped = check.failing.filter((f) => f.error != null);
+  const advice: string[] = [];
+  if (wrongOutput.length > 0) {
+    const what = wrongOutput.length === 1 ? "that test's expected output" : "those tests' expected outputs";
+    advice.push(`Check ${what}: ${wrongOutput.map((f) => f.label).join(', ')}`);
+  }
+  for (const f of stopped.slice(0, 2)) {
+    const error = f.error!.length > MAX_ERROR_CHARS ? `${f.error!.slice(0, MAX_ERROR_CHARS - 1)}…` : f.error!;
+    advice.push(`${f.label} doesn't run to the end: ${sentence(error)}`);
+  }
+  if (stopped.length > 2) advice.push(`${num(stopped.length - 2)} more ${stopped.length === 3 ? "doesn't" : "don't"} either`);
+  if (stopped.length > 0) {
+    const what = stopped.length === 1 ? "that test's input" : "those tests' inputs";
+    advice.push(`Check ${what} (one line for each time your solution asks for input) and your solution`);
+  }
+  return advice;
+}
+
+/**
+ * "Your solution fails 1 of 3 tests. Check that test's expected output: Test 2." Null when it passes every one.
+ * See `failingTestAdvice`.
+ */
+export function solutionCheckWarning(check: SolutionCheck | null): string | null {
+  if (!solutionFailsTests(check)) return null;
+  return [`Your solution fails ${num(check.failing.length)} of ${plural(check.total, 'test')}`, ...failingTestAdvice(check)].map(sentence).join(' ');
+}
+
+/**
+ * A run prepared ahead (while the Autograde modal is open) that the run the teacher starts can use as it is: null
+ * when the code runner failed while preparing it, so the run tries again.
+ */
+export function reusablePreparation(prepared: PreparedAutograde | null): PreparedAutograde | null {
+  if (!prepared) return null;
+  const { method } = prepared.setup;
+  const checkMissing = method.tests && method.solution && prepared.solutionCheck == null;
+  return prepared.reference === 'runner' || checkMissing ? null : prepared;
 }
 
 /**
@@ -294,8 +445,6 @@ export async function autogradeSubmission(
 
 // --- Wording -------------------------------------------------------------------------------------------
 
-const plural = (n: number, one: string, many = `${one}s`) => `${n.toLocaleString('en-US')} ${n === 1 ? one : many}`;
-
 /** "Autograde 1 submission" / "Autograde 12 submissions". */
 export function autogradeButtonLabel(count: number): string {
   return `Autograde ${plural(count, 'submission')}`;
@@ -340,25 +489,48 @@ export function effectiveScope(scope: AutogradeScope, setGrades: boolean): Autog
   return !setGrades && scope === 'replace-all' ? 'handed-in' : scope;
 }
 
+/** The rule for work that is the solution typed differently (the modal, and the "Matches solution" badge's tooltip). */
+export const SAME_PROGRAM_RULE =
+  "Work that is the same program as your solution gets full marks — spacing, indentation, blank lines and comments don't count.";
+
+/** "Output is compared: Ignore all spaces and line breaks." */
+export function compareRule(mode: CompareMode): string {
+  return `Output is compared: ${COMPARE_MODE_LABELS[mode]}.`;
+}
+
+/** Where to add tests, for assignments whose solution asks for input. */
+const ADD_TESTS =
+  'Add tests (Edit → Tests → Fill expected outputs from a model solution) so autograde can check programs that ask for input.';
+
+/** How web page text is compared (it isn't output, so the compare mode doesn't apply). */
+const PAGE_TEXT_RULE = "Text on the page counts as a browser shows it: extra spaces and line breaks don't count; capitals do.";
+
 /** How scores are worked out for this assignment, one plain-words rule per item, for the modal. */
-export function autogradeRules(method: AutogradeMethod, kind: LanguageKind, points: number, setGrades: boolean): string[] {
+export function autogradeRules(
+  method: AutogradeMethod,
+  kind: LanguageKind,
+  points: number,
+  setGrades: boolean,
+  compareMode: CompareMode,
+): string[] {
   const rules: string[] = [];
   const otherwise = setGrades ? 'anything else is left for you to grade' : 'anything else gets no auto score';
-  if (method.solution) {
-    rules.push("Work that matches your solution gets full marks. Blank lines and spaces at the ends of lines don't count.");
-  }
+  if (method.solution) rules.push(SAME_PROGRAM_RULE);
   if (method.tests) {
     rules.push(
       `${method.solution ? 'Other work scores' : 'Each submission scores'} the share of tests it passes, hidden tests included and weighted by their points.`,
     );
+    rules.push(compareRule(compareMode));
     if (setGrades) rules.push(`The score becomes a grade out of ${points}: ${scoreExample(points)}.`);
   } else if (method.output) {
     rules.push(
       `There are no tests, so your solution runs once without any input. Other work that prints the same thing without asking for input gets full marks; ${otherwise}.`,
     );
+    rules.push(compareRule(compareMode));
   } else {
     const what = kind === 'web' ? "Web pages can't be run here" : "Work in this language can't be run here";
-    rules.push(`${what}, so only an exact match with your solution gets a score. ${otherwise[0]!.toUpperCase()}${otherwise.slice(1)}.`);
+    rules.push(`${what}, so only the same program as your solution gets a score. ${otherwise[0]!.toUpperCase()}${otherwise.slice(1)}.`);
+    if (kind === 'web' && method.solution) rules.push(PAGE_TEXT_RULE);
   }
   return rules;
 }
@@ -382,55 +554,189 @@ export interface AutogradeTally {
   changed: number;
   /** Couldn't be saved for another reason. */
   failed: number;
+  /** Why work wasn't scored, for the work left without a score (`unscored` and `cleared`). */
+  reasons: Record<UnscoredReason, number>;
 }
 
 export function emptyTally(total: number): AutogradeTally {
-  return { total, graded: 0, kept: 0, scored: 0, unscored: 0, cleared: 0, unchecked: 0, changed: 0, failed: 0 };
+  return {
+    total,
+    graded: 0,
+    kept: 0,
+    scored: 0,
+    unscored: 0,
+    cleared: 0,
+    unchecked: 0,
+    changed: 0,
+    failed: 0,
+    reasons: { 'student-input': 0, 'student-error': 0, 'student-timeout': 0, 'output-differs': 0, 'no-reference': 0, 'not-runnable': 0 },
+  };
 }
 
-function referenceNote(problem: ReferenceProblem, setGrades: boolean): string {
-  const verb = setGrades ? 'graded' : 'scored';
+/** Counts what happened to one submission. */
+export function tallyStep(tally: AutogradeTally, step: AutogradeStep): void {
+  tally[step.outcome] += 1;
+  const reason = step.result.unscoredReason;
+  if (reason && (step.outcome === 'unscored' || step.outcome === 'cleared')) tally.reasons[reason] += 1;
+}
+
+/** Why the solution can't be a reference, and what that means: the first half of the note. */
+function referenceProblemText(problem: Exclude<ReferenceProblem, 'runner'>): string {
   switch (problem) {
-    case 'runner':
-      return `The code runner didn't start when your solution ran, so only work that matches it exactly was ${verb}. Reload the page and run autograde again to check the rest.`;
-    case 'failed':
-      return `Your solution didn't finish without input (it may ask for some), so only work that matches it exactly could be ${verb}.`;
+    case 'input':
+      return 'Your solution asks for input, and with no tests autograde runs programs without any';
+    case 'error':
+      return 'Your solution stops with an error when it runs without input';
+    case 'timeout':
+      return "Your solution doesn't finish in time when it runs without input";
     case 'silent':
-      return `Your solution doesn't print anything, so only work that matches it exactly could be ${verb}.`;
+      return "Your solution doesn't print anything";
   }
+}
+
+/** What to do about a solution whose output can't be compared with: the second half of the note. */
+function referenceFix(problem: Exclude<ReferenceProblem, 'runner'>): string {
+  switch (problem) {
+    case 'input':
+      return ADD_TESTS;
+    case 'error':
+    case 'timeout':
+      return 'Fix your solution (Edit → Solution) so it runs to the end without input, or add tests (Edit → Tests).';
+    case 'silent':
+      return 'Make your solution print its result (Edit → Solution), or add tests (Edit → Tests).';
+  }
+}
+
+/** Why only work that's the same program as the solution could be scored, and what to do about it. */
+function referenceNote(problem: ReferenceProblem, verb: string): string {
+  if (problem === 'runner') {
+    return `The code runner didn't start when your solution ran, so only work that's the same program as your solution was ${verb}. Reload the page and run autograde again to check the rest.`;
+  }
+  return `${referenceProblemText(problem)}, so only work that's the same program as your solution could be ${verb}. ${referenceFix(problem)}`;
+}
+
+export interface AutogradeWarning {
+  title: string;
+  sentences: string[];
+  /** The fix is in the assignment editor (the solution or the tests). */
+  editAssignment: boolean;
+}
+
+/**
+ * What the Autograde modal warns about before anything is graded, from the run it got ready: a solution whose output
+ * can't be compared with the students' (no tests), or one that fails some of the tests. Null when all is well.
+ */
+export function autogradeWarning(prepared: PreparedAutograde, setGrades: boolean): AutogradeWarning | null {
+  const verb = setGrades ? 'graded' : 'scored';
+  const onlySame = `Only work that's the same program as your solution will be ${verb}.`;
+  switch (prepared.reference) {
+    case 'runner':
+      return {
+        title: "The code runner didn't start",
+        sentences: ["Your solution couldn't be run just now. Autograding tries again when you start it; if it still doesn't start, reload the page."],
+        editAssignment: false,
+      };
+    case 'input':
+      return {
+        title: 'Your solution asks for input',
+        sentences: [
+          "With no tests, autograde runs programs without input, so it can't compare students' output with your solution's.",
+          onlySame,
+          ADD_TESTS,
+        ],
+        editAssignment: true,
+      };
+    case 'error':
+    case 'timeout':
+    case 'silent':
+      return {
+        title: referenceProblemText(prepared.reference),
+        sentences: ["There's no output to compare students' output with.", onlySame, referenceFix(prepared.reference)],
+        editAssignment: true,
+      };
+    case null:
+      break;
+  }
+  const check = prepared.solutionCheck;
+  if (!solutionFailsTests(check)) return null;
+  return {
+    title: `Your solution fails ${num(check.failing.length)} of ${plural(check.total, 'test')}`,
+    sentences: [
+      ...failingTestAdvice(check).map(sentence),
+      `Other work is ${verb} by the tests it passes, so a mistake in a test lowers everyone's score.`,
+    ],
+    editAssignment: true,
+  };
+}
+
+/** "2 ask for input", "1 stops with an error", … for the reasons a student's work wasn't scored. */
+const REASON_COUNTS: Record<Exclude<UnscoredReason, 'no-reference'>, [one: string, many: string]> = {
+  'student-input': ['asks for input', 'ask for input'],
+  'student-error': ['stops with an error', 'stop with an error'],
+  'student-timeout': ["doesn't finish in time", "don't finish in time"],
+  'output-differs': ['prints something different from your solution', 'print something different from your solution'],
+  'not-runnable': ["isn't the same program as your solution", "aren't the same program as your solution"],
+};
+
+/**
+ * "Not graded: 2 ask for input, 1 stops with an error." Work the solution couldn't be compared with is explained by
+ * the reference note instead. Null when there's nothing to break down.
+ */
+function reasonBreakdown(reasons: Record<UnscoredReason, number>, verb: string): string | null {
+  const parts = (Object.keys(REASON_COUNTS) as (keyof typeof REASON_COUNTS)[])
+    .filter((reason) => reasons[reason] > 0)
+    .map((reason) => `${num(reasons[reason])} ${REASON_COUNTS[reason][reasons[reason] === 1 ? 0 : 1]}`);
+  return parts.length > 0 ? `Not ${verb}: ${parts.join(', ')}.` : null;
+}
+
+export interface AutogradeSummary {
+  title: string;
+  message: string;
+  color: 'teal' | 'yellow' | 'red';
+  /** Something needs the teacher's attention, so the notification stays until they close it. */
+  keepOpen: boolean;
 }
 
 /** The notification shown when autograding ends. */
 export function autogradeSummary(
   tally: AutogradeTally,
-  { stopped, setGrades, reference = null }: { stopped: boolean; setGrades: boolean; reference?: ReferenceProblem | null },
-): { title: string; message: string; color: 'teal' | 'yellow' | 'red' } {
-  const count = (n: number) => n.toLocaleString('en-US');
+  {
+    stopped,
+    setGrades,
+    reference = null,
+    solutionCheck = null,
+  }: { stopped: boolean; setGrades: boolean; reference?: ReferenceProblem | null; solutionCheck?: SolutionCheck | null },
+): AutogradeSummary {
   const counts = setGrades
     ? [
-        tally.graded > 0 ? `${count(tally.graded)} graded` : null,
-        tally.unscored > 0 ? `${count(tally.unscored)} left for you to grade` : null,
+        tally.graded > 0 ? `${num(tally.graded)} graded` : null,
+        tally.unscored > 0 ? `${num(tally.unscored)} left for you to grade` : null,
         tally.cleared > 0 ? `${plural(tally.cleared, 'earlier auto grade')} taken off` : null,
         tally.kept > 0 ? `${plural(tally.kept, 'grade')} you entered kept` : null,
       ]
     : [
         tally.scored > 0 ? `${plural(tally.scored, 'auto score')} updated` : null,
-        tally.unscored > 0 ? `${count(tally.unscored)} couldn't be scored` : null,
+        tally.unscored > 0 ? `${num(tally.unscored)} couldn't be scored` : null,
       ];
   counts.push(
-    tally.unchecked > 0 ? `${count(tally.unchecked)} couldn't be checked` : null,
-    tally.changed > 0 ? `${count(tally.changed)} changed while autograding` : null,
-    tally.failed > 0 ? `${count(tally.failed)} couldn't be saved` : null,
+    tally.unchecked > 0 ? `${num(tally.unchecked)} couldn't be checked` : null,
+    tally.changed > 0 ? `${num(tally.changed)} changed while autograding` : null,
+    tally.failed > 0 ? `${num(tally.failed)} couldn't be saved` : null,
   );
   const parts = counts.filter((part) => part !== null);
   const done =
     tally.graded + tally.kept + tally.scored + tally.unscored + tally.cleared + tally.unchecked + tally.changed + tally.failed;
 
+  const verb = setGrades ? 'graded' : 'scored';
   const sentences: string[] = [];
   if (parts.length > 0) sentences.push(parts.join(' · '));
   else sentences.push(stopped ? 'Stopped before any work was checked.' : 'Nothing was checked.');
   if (stopped && done > 0 && done < tally.total) sentences.push(`Stopped after ${done} of ${tally.total}.`);
-  if (reference) sentences.push(referenceNote(reference, setGrades));
+  const breakdown = reasonBreakdown(tally.reasons, verb);
+  if (breakdown) sentences.push(breakdown);
+  if (reference) sentences.push(referenceNote(reference, verb));
+  const warning = solutionCheckWarning(solutionCheck);
+  if (warning) sentences.push(warning);
   if (tally.cleared > 0) {
     sentences.push("Work autograde graded before but can't score now is back in To grade without that grade.");
   }
@@ -442,6 +748,8 @@ export function autogradeSummary(
   else if (setGrades && tally.graded > 0 && !stopped) sentences.push('Students can see their new grades now.');
 
   const problems = tally.failed > 0 || tally.unchecked > 0;
+  // Work left without a score, a solution that can't be compared with or that fails tests, or work to check again.
+  const attention = problems || tally.unscored > 0 || tally.cleared > 0 || tally.changed > 0 || reference !== null || warning !== null;
   return {
     title: stopped
       ? 'Autograding stopped'
@@ -450,8 +758,9 @@ export function autogradeSummary(
         : tally.unchecked > 0
           ? 'Some work could not be checked'
           : 'Autograding finished',
-    message: sentences.map((s) => (/[.!?]$/.test(s) ? s : `${s}.`)).join(' '),
-    color: problems ? 'red' : stopped || tally.changed > 0 || tally.cleared > 0 ? 'yellow' : 'teal',
+    message: sentences.map(sentence).join(' '),
+    color: problems ? 'red' : stopped || attention ? 'yellow' : 'teal',
+    keepOpen: attention,
   };
 }
 
@@ -483,9 +792,6 @@ export function autogradeAllBlocker(handedInCount: number, activity: AutogradeAc
   return activity?.kind === 'one' ? waitFor(activity) : null;
 }
 
-const num = (n: number) => n.toLocaleString('en-US');
-const sentence = (s: string) => (/[.!?]$/.test(s) ? s : `${s}.`);
-
 /** The grade the teacher entered themselves ("8 / 10"), which autograding this work would replace; null if none. */
 export function handGradeToReplace(submission: Submission, outOf: number): string | null {
   if (submission.status !== 'graded' || submission.autoGraded || submission.grade == null) return null;
@@ -506,21 +812,36 @@ export function autogradeOneConfirmation(submission: Submission, outOf: number, 
   return sentences;
 }
 
-/** Why autograde couldn't score the work (no runner error): the first half of the message. */
-function unscoredReason(method: AutogradeMethod, kind: LanguageKind, reference: ReferenceProblem | null): string {
-  if (method.output) {
-    if (reference === 'failed') return "Your solution didn't finish without input (it may ask for some), so only work that matches it exactly can be scored";
-    if (reference === 'silent') return "Your solution doesn't print anything, so only work that matches it exactly can be scored";
-    return "Its output differs from your solution's";
+/** Why autograde couldn't score the work (no runner error), and what to do about it: the first part of the message. */
+function unscoredText(
+  reason: UnscoredReason | undefined,
+  { kind, reference, compareMode }: { kind: LanguageKind; reference: ReferenceProblem | null; compareMode: CompareMode },
+): string[] {
+  switch (reason) {
+    case 'student-input':
+      return ["It asks for input, and with no tests autograde runs work without any, so its output can't be checked"];
+    case 'student-error':
+      return ['It stops with an error when it runs without input'];
+    case 'student-timeout':
+      return ["It doesn't finish in time when it runs without input"];
+    case 'output-differs':
+      return ["Its output differs from your solution's", compareRule(compareMode)];
+    case 'no-reference': {
+      if (!reference || reference === 'runner') return ["Your solution's output can't be compared with"];
+      return [`${referenceProblemText(reference)}, so only work that's the same program as your solution can be scored`, referenceFix(reference)];
+    }
+    case 'not-runnable': {
+      const what = kind === 'web' ? "web pages can't be run here" : "work in this language can't be run here";
+      return [`It isn't the same program as your solution, and ${what}`];
+    }
+    case undefined:
+      return ["Autograde couldn't score it"];
   }
-  if (method.tests) return "Autograde couldn't score it";
-  const what = kind === 'web' ? "web pages can't be run here" : "work in this language can't be run here";
-  return `It doesn't match your solution, and ${what}`;
 }
 
-/** Why the graded work got its score: "matches your solution", "3 of 4 tests passed", … */
+/** Why the graded work got its score: "same program as your solution", "3 of 4 tests passed", … */
 function gradedReason(result: AutogradeResult, tests: TestCase[]): string {
-  if (result.matchesSolution) return 'matches your solution';
+  if (result.matchesSolution) return 'same program as your solution';
   if (result.testResults) {
     const results = result.testResults;
     const passed = tests.filter((t) => results.some((r) => r.testId === t.id && r.passed)).length;
@@ -540,9 +861,10 @@ export function autogradeOneSummary(
     before,
     outOf,
     tests,
-    method,
     kind,
+    compareMode,
     reference = null,
+    solutionCheck = null,
   }: {
     /** The student's name. */
     name: string;
@@ -552,22 +874,31 @@ export function autogradeOneSummary(
     outOf: number;
     /** Every test, hidden ones included. */
     tests: TestCase[];
-    method: AutogradeMethod;
     kind: LanguageKind;
+    compareMode: CompareMode;
     reference?: ReferenceProblem | null;
+    /** The solution's own results on the tests (`PreparedAutograde.solutionCheck`). */
+    solutionCheck?: SolutionCheck | null;
   },
-): { title: string; message: string; color: 'teal' | 'yellow' | 'red' } {
+): AutogradeSummary {
   if (!step) {
-    return { title: 'Autograding stopped', message: `${name}'s work wasn't changed. Autograding stops when you leave the page.`, color: 'yellow' };
+    return {
+      title: 'Autograding stopped',
+      message: `${name}'s work wasn't changed. Autograding stops when you leave the page.`,
+      color: 'yellow',
+      keepOpen: false,
+    };
   }
   const { result } = step;
   const join = (parts: (string | null)[]) => parts.filter((p) => p !== null).map(sentence).join(' ');
+  const warning = solutionCheckWarning(solutionCheck);
   switch (step.outcome) {
     case 'graded':
       return {
         title: `Graded ${num(gradeFromAutoScore(result.score ?? 0, outOf))} / ${num(outOf)} — ${gradedReason(result, tests)}`,
-        message: `${name} can see this grade now.`,
-        color: 'teal',
+        message: join([`${name} can see this grade now`, warning]),
+        color: warning ? 'yellow' : 'teal',
+        keepOpen: warning !== null,
       };
     case 'unchecked': {
       const detail = result.runnerError ?? '';
@@ -579,6 +910,7 @@ export function autogradeOneSummary(
           /reload/i.test(detail) ? null : 'Reload the page and try again',
         ]),
         color: 'red',
+        keepOpen: true,
       };
     }
     case 'changed':
@@ -586,12 +918,13 @@ export function autogradeOneSummary(
         title: `${name}'s work changed`,
         message: 'It changed while it was being autograded (it may have been unsubmitted), so nothing was saved. Check it and try again.',
         color: 'yellow',
+        keepOpen: true,
       };
     case 'failed':
-      return { title: `Couldn't autograde ${name}'s work`, message: errorMessage(step.error), color: 'red' };
+      return { title: `Couldn't autograde ${name}'s work`, message: errorMessage(step.error), color: 'red', keepOpen: true };
     case 'scored':
       // Not reached (grades are always set), but say what happened if it were.
-      return { title: 'Auto score updated', message: `${name}'s grade wasn't changed.`, color: 'teal' };
+      return { title: 'Auto score updated', message: `${name}'s grade wasn't changed.`, color: 'teal', keepOpen: false };
     case 'unscored':
     case 'kept':
     case 'cleared': {
@@ -602,7 +935,12 @@ export function autogradeOneSummary(
           : step.outcome === 'cleared'
             ? `Its earlier auto grade${grade ? ` (${grade})` : ''} was taken off, so it's back in To grade`
             : "It's left for you to grade";
-      return { title: `Couldn't score ${name}'s work`, message: join([unscoredReason(method, kind, reference), then]), color: 'yellow' };
+      return {
+        title: `Couldn't score ${name}'s work`,
+        message: join([...unscoredText(result.unscoredReason, { kind, reference, compareMode }), then, warning]),
+        color: 'yellow',
+        keepOpen: true,
+      };
     }
   }
 }

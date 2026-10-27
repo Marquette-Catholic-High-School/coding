@@ -311,7 +311,8 @@ export const assignmentInputSchema = z.object({
   published: z.boolean().default(true),
   allowLate: z.boolean().default(true),
   tests: z.array(testCaseSchema).max(50).default([]),
-  compareMode: z.enum(['exact', 'trim', 'ignore-whitespace', 'ignore-case']).default('trim'),
+  /** New assignments ignore all spacing by default; existing ones keep their mode. */
+  compareMode: z.enum(['exact', 'trim', 'ignore-whitespace', 'ignore-case']).default('ignore-whitespace'),
   /** Reference solution (''= none). `after_due` needs a due date (400 fieldErrors.solutionVisibility). */
   solutionCode: z.string().max(50000).default(''),
   solutionVisibility: z.enum(['hidden', 'after_due', 'after_graded', 'visible']).default('hidden'),

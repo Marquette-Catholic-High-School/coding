@@ -93,10 +93,16 @@ async function handleRun(request: RunRequest): Promise<void> {
   // Once the user ends the input, every later read gets end-of-file too (as with a closed pipe).
   let inputEnded = false;
   let readInput = false;
+  // Called on every read, before its input is echoed: tells the page which stdout text was the read's prompt.
+  const takePrompt = (prompt?: string) => {
+    const range = out.takePrompt(prompt);
+    if (range) post({ type: 'prompt', id, start: range.start, end: range.end });
+  };
   const io: RunIO = {
     write: (stream, text) => out.write(stream, text),
-    readLine: () => {
+    readLine: (prompt) => {
       readInput = true;
+      takePrompt(prompt);
       const given = stdin.shift();
       if (given !== undefined) {
         out.echoInput(given);
@@ -146,7 +152,7 @@ async function handleRun(request: RunRequest): Promise<void> {
       shown: 0,
     };
     const attempt = () => {
-      const result = runReplayAttempt(state, { write: (stream, text) => out.write(stream, text) });
+      const result = runReplayAttempt(state, { write: (stream, text) => out.write(stream, text), read: takePrompt });
       if (result) {
         pendingReplay = null;
         finish(id, out, result, state.readInput === true);

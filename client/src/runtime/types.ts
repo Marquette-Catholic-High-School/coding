@@ -41,6 +41,15 @@ export interface RunOutcome {
   error: RunError | null;
   /** Everything written to stdout (used by tests). */
   stdout: string;
+  /**
+   * `stdout` without the program's input prompts. A prompt is the text an input call printed itself just before it
+   * read, or tried to read, a line of input: "Enter a number: " from `INPUT "Enter a number: ", n`, Python's
+   * `input("Enter a number: ")`, or JavaScript's `prompt("Enter a number: ")` (also `input()`, `rl.question()` and
+   * `rl.prompt()`). Lua's io.read() prints none, so there it's the unfinished line printed just before (with
+   * io.write), when no input was read on that line yet. Text printed by other statements (`print("Enter a number")`,
+   * or `print(n, end=" ")` before the next input()) is output. Neither includes the input itself.
+   */
+  promptlessStdout: string;
   durationMs: number;
   /**
    * The program started running. False when it never got that far: the code runner failed first (the language
@@ -95,6 +104,8 @@ export interface TestProgress {
   /** Index of the test that just finished. */
   index: number;
   result: TestResult;
+  /** `result.actualOutput` without the program's input prompts (see `RunOutcome.promptlessStdout`). */
+  promptlessOutput: string;
 }
 
 export interface RunTestsOptions {

@@ -28,24 +28,26 @@ export function seededRandom(seed: number): () => number {
 
 interface Transcript {
   write(stream: 'stdout' | 'stdin', text: string): void;
-  /** Next input line, or null at end of input. May throw to abandon the run. */
-  readLine(): string | null;
+  /** Next input line, or null at end of input; `prompt` is what INPUT just printed ('' = none). May throw to stop the run. */
+  readLine(prompt: string): string | null;
 }
 
+/** Output kept since the last read to tell whether the engine printed INPUT's prompt already. */
+const MAX_PROMPT_CHARS = 2_000;
+
 function execute(code: string, config: PseudocodeConfig | null, transcript: Transcript, random?: () => number): LangResult {
-  let partialLine = '';
+  // What the program printed since its last read (the end of it).
+  let sinceRead = '';
   const io: PseudoIO = {
     write: (text) => {
       transcript.write('stdout', text);
-      const newline = text.lastIndexOf('\n');
-      partialLine = newline >= 0 ? text.slice(newline + 1) : partialLine + text;
+      sinceRead = (sinceRead + text).slice(-MAX_PROMPT_CHARS);
     },
     readLine: (prompt) => {
-      // Show the INPUT("…") prompt unless the engine already printed it.
-      if (prompt && !partialLine.endsWith(prompt)) io.write(prompt);
-      const line = transcript.readLine();
-      if (line !== null) partialLine = '';
-      return line;
+      // Show the INPUT("…") prompt unless the engine already printed it (a prompt can end with a line break).
+      if (prompt && !sinceRead.endsWith(prompt)) io.write(prompt);
+      sinceRead = '';
+      return transcript.readLine(prompt ?? '');
     },
   };
   const result = runPseudocode(code, config ?? createPseudocodeConfig(), io, random ? { random } : undefined);
@@ -60,7 +62,7 @@ export const pseudocodeRunner: LanguageRunner = {
     try {
       return execute(code, context.pseudocode, {
         write: (_stream, text) => io.write('stdout', text),
-        readLine: () => io.readLine(),
+        readLine: (prompt) => io.readLine(prompt),
       });
     } catch (err) {
       return failure({ message: `The pseudocode engine hit a problem: ${describeError(err)}` });
@@ -82,10 +84,17 @@ export interface ReplayState {
   shown: number;
   /** The program asked for a line of input in some attempt (set by `runReplayAttempt`). */
   readInput?: boolean;
+  /** Reads of input that earlier attempts reported to `ReplayOutput.read` (set by `runReplayAttempt`). */
+  reads?: number;
 }
 
 export interface ReplayOutput {
   write(stream: 'stdout' | 'stdin', text: string): void;
+  /**
+   * The program reads (or tries to read) a line of input, after printing `prompt` ('' = none); called once per read
+   * over all attempts, before its echo.
+   */
+  read?(prompt: string): void;
 }
 
 const NEEDS_INPUT = Symbol('needs input');
@@ -110,6 +119,7 @@ export function runReplayAttempt(state: ReplayState, out: ReplayOutput): LangRes
   };
   const stdin = [...state.stdin];
   const typed = [...state.typed];
+  let reads = 0;
   let result: LangResult;
   try {
     result = execute(
@@ -117,8 +127,14 @@ export function runReplayAttempt(state: ReplayState, out: ReplayOutput): LangRes
       state.config,
       {
         write: emit,
-        readLine: () => {
+        readLine: (prompt) => {
           state.readInput = true;
+          // Reads up to the one an earlier attempt stopped at were reported by that attempt.
+          reads++;
+          if (reads > (state.reads ?? 0)) {
+            state.reads = reads;
+            out.read?.(prompt);
+          }
           const given = stdin.shift();
           if (given !== undefined) {
             emit('stdin', `${given}\n`);

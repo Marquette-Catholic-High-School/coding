@@ -1,4 +1,4 @@
-import { matchesSolution, type Assignment, type AssignmentResponse, type SubmissionRow } from '@codeclass/shared';
+import type { Assignment, AssignmentResponse, Language, SubmissionRow } from '@codeclass/shared';
 import {
   Accordion,
   ActionIcon,
@@ -58,6 +58,7 @@ import { PageHeader } from '../../components/PageHeader';
 import { PageLoader, QueryState } from '../../components/QueryState';
 import { RelativeTime } from '../../components/RelativeTime';
 import { StatCard } from '../../components/StatCard';
+import { useSameProgram } from '../../grading/useSameProgram';
 import { usePageTitle } from '../../hooks/usePageTitle';
 import { autogradeAllBlocker, autogradeMethod, autogradeOneBlocker, type AutogradeActivity } from './autograde';
 import { AutogradeModal } from './AutogradeModal';
@@ -341,6 +342,7 @@ function Overview({ data }: { data: AssignmentResponse }) {
               <SubmissionsTable
                 rows={visibleRows}
                 assignment={assignment}
+                language={language}
                 onGrade={keepRow}
                 autograde={method ? { activity: autograde.activity, start: (target) => void autograde.autogradeOne(target) } : null}
               />
@@ -371,10 +373,10 @@ function Overview({ data }: { data: AssignmentResponse }) {
           opened={autogradeOpen}
           onClose={() => setAutogradeOpen(false)}
           assignment={assignment}
-          kind={language.kind}
+          language={language}
           method={method}
           rows={rows}
-          onStart={(options) => void autograde.start(rows, options)}
+          onStart={(options, prepared) => void autograde.start(rows, options, prepared)}
         />
       )}
     </>
@@ -384,11 +386,13 @@ function Overview({ data }: { data: AssignmentResponse }) {
 function SubmissionsTable({
   rows,
   assignment,
+  language,
   onGrade,
   autograde,
 }: {
   rows: SubmissionRow[];
   assignment: Assignment;
+  language: Language;
   /** The teacher started on this student's grade inline. */
   onGrade: (studentId: number) => void;
   /** Autograding one student's work from their row; null when autograde has nothing to check for this assignment. */
@@ -453,7 +457,7 @@ function SubmissionsTable({
                   <Group gap={6} wrap="nowrap">
                     <SubmissionStatusBadge status={submission.status} />
                     {submission.late && <LateBadge missing={!isHandedIn} />}
-                    {isHandedIn && matchesSolution(submission.code, assignment.solutionCode) && <SolutionMatchBadge />}
+                    {isHandedIn && <SolutionMatch language={language} code={submission.code} assignment={assignment} />}
                   </Group>
                 </Table.Td>
                 <Table.Td>
@@ -505,6 +509,11 @@ function SubmissionsTable({
       </Table>
     </Table.ScrollContainer>
   );
+}
+
+/** "Matches solution" when the work is the same program as the teacher's solution (nothing while that's worked out). */
+function SolutionMatch({ language, code, assignment }: { language: Language; code: string; assignment: Assignment }) {
+  return useSameProgram(language, code, assignment.solutionCode, assignment.compareMode) ? <SolutionMatchBadge /> : null;
 }
 
 /** A row's actions menu: Autograde this student's work (disabled with the reason when it can't be). */

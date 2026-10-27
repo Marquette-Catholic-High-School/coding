@@ -186,11 +186,23 @@ function describe(err: unknown): string {
 
 function settledHandle(error: RunError): RunHandle {
   return {
-    done: Promise.resolve({ status: 'error', error, stdout: '', durationMs: 0, started: false, readInput: false }),
+    done: Promise.resolve({ status: 'error', error, stdout: '', promptlessStdout: '', durationMs: 0, started: false, readInput: false }),
     stop() {},
     provideInput() {},
     endInput() {},
   };
+}
+
+/** `stdout` without the prompts (in order, not overlapping); prompt text that never arrived is ignored. */
+function withoutPrompts(stdout: string, prompts: readonly { start: number; end: number }[]): string {
+  let text = '';
+  let from = 0;
+  for (const { start, end } of prompts) {
+    if (start >= stdout.length) break;
+    text += stdout.slice(from, Math.max(from, start));
+    from = Math.max(from, Math.min(end, stdout.length));
+  }
+  return text + stdout.slice(from);
 }
 
 class RunSession {
@@ -206,6 +218,8 @@ class RunSession {
   /** The program asked for a line of input. */
   private readInput = false;
   private stdout = '';
+  /** Where the program's input prompts are in `stdout`, in order (see `RunOutcome.promptlessStdout`). */
+  private readonly prompts: { start: number; end: number }[] = [];
   /** Reads the worker's output tail (output it could not send yet); null without cross-origin isolation. */
   private tail: OutputTailReader | null = null;
   private tailTimer: ReturnType<typeof setInterval> | null = null;
@@ -291,6 +305,9 @@ class RunSession {
         break;
       case 'output':
         this.emit(this.tail ? this.tail.receive(message.batch, message.chunks) : message.chunks);
+        break;
+      case 'prompt':
+        this.prompts.push({ start: message.start, end: message.end });
         break;
       case 'input-request': {
         this.readInput = true;
@@ -419,6 +436,7 @@ class RunSession {
       status,
       error,
       stdout: this.stdout,
+      promptlessStdout: withoutPrompts(this.stdout, this.prompts),
       durationMs: Math.round(this.elapsedMs),
       started: this.started,
       readInput: this.readInput,

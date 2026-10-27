@@ -1,5 +1,6 @@
-// Worker-side output buffer: merges writes into chunks and sends them to the main thread, enforces the output cap
-// and remembers the unfinished stdout line (the prompt shown before an input request).
+// Worker-side output buffer: merges writes into chunks and sends them to the main thread, enforces the output cap,
+// remembers the unfinished stdout line (the prompt shown before an input request) and finds each read's prompt in
+// stdout.
 //
 // Language runtimes often run synchronously and never yield to the event loop, so a batching timer may never fire.
 // Writes are therefore sent straight away until `burst` messages went out within one interval; only a flood of
@@ -26,6 +27,8 @@ export interface OutputBufferOptions {
 }
 
 const MAX_PROMPT_CHARS = 500;
+/** stdout kept since the last read to check that it ends with the read's prompt; a longer prompt stays in the output. */
+const MAX_PROMPT_MATCH = 2_000;
 // Captured at load so a JavaScript program that replaces the global timers cannot break output delivery.
 const defaultSchedule = globalThis.setTimeout.bind(globalThis);
 const defaultCancel = globalThis.clearTimeout.bind(globalThis);
@@ -39,6 +42,13 @@ export class OutputBuffer {
   private sentInWindow = 0;
   private timer: unknown = null;
   private partialLine = '';
+  /** stdout characters written so far, and where the current line starts among them (see `takePrompt`). */
+  private stdoutChars = 0;
+  private lineStart = 0;
+  /** The program read input since the current stdout line started. */
+  private readOnLine = false;
+  /** The end of the stdout written since the last read (at most MAX_PROMPT_MATCH characters). */
+  private sinceRead = '';
   private endsWithNewline = true;
   private readonly send: (chunks: OutputChunk[], batch: number) => void;
   private readonly tail: OutputTailSink | null;
@@ -100,6 +110,23 @@ export class OutputBuffer {
     this.partialLine = '';
   }
 
+  /**
+   * The program reads (or tries to read) a line of input: returns where that read's prompt is in stdout, or null if
+   * it has none. `prompt` is the text the input call printed itself (see `RunIO.readLine`), which stdout must end
+   * with. Without it, the prompt is the unfinished stdout line (uncapped, unlike `pendingPrompt`) — unless input was
+   * read on that line already: text printed between two reads on one line, like "2 4 " from a loop that reads a
+   * number and prints its double with io.write(n * 2, " "), is the program's output.
+   */
+  takePrompt(prompt?: string): { start: number; end: number } | null {
+    const sinceRead = this.sinceRead;
+    const readOnLine = this.readOnLine;
+    this.sinceRead = '';
+    this.readOnLine = true;
+    const end = this.stdoutChars;
+    if (prompt !== undefined) return prompt !== '' && sinceRead.endsWith(prompt) ? { start: end - prompt.length, end } : null;
+    return !readOnLine && end > this.lineStart ? { start: this.lineStart, end } : null;
+  }
+
   flush(): void {
     if (this.timer !== null) {
       this.cancel(this.timer);
@@ -122,6 +149,13 @@ export class OutputBuffer {
     this.endsWithNewline = text.endsWith('\n');
     if (stream === 'stdout') {
       const newline = text.lastIndexOf('\n');
+      this.stdoutChars += text.length;
+      if (newline >= 0) {
+        this.lineStart = this.stdoutChars - (text.length - newline - 1);
+        this.readOnLine = false;
+      }
+      const sinceRead = this.sinceRead + text;
+      this.sinceRead = sinceRead.length > MAX_PROMPT_MATCH ? sinceRead.slice(-MAX_PROMPT_MATCH) : sinceRead;
       this.partialLine = newline >= 0 ? text.slice(newline + 1) : this.partialLine + text;
       if (this.partialLine.length > MAX_PROMPT_CHARS) this.partialLine = this.partialLine.slice(-MAX_PROMPT_CHARS);
     } else if (stream === 'stdin') {

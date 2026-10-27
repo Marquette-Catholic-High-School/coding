@@ -44,11 +44,22 @@ export function outcomeErrorText(outcome: RunOutcome): string | null {
   }
 }
 
+function shortOutput(output: string): string {
+  return truncate(output, MAX_TEST_OUTPUT_CHARS, '\n… (output cut off)');
+}
+
+/**
+ * A test passes when the program finished and its output matches the expected output, with or without its input
+ * prompts (see `RunOutcome.promptlessStdout`): expected outputs may include the prompts or leave them out.
+ */
 export function testResultFromOutcome(test: TestCase, outcome: RunOutcome, compareMode: CompareMode): TestResult {
+  const matches = (output: string) => outputsMatch(output, test.expectedOutput, compareMode);
   return {
     testId: test.id,
-    passed: outcome.status === 'ok' && outputsMatch(outcome.stdout, test.expectedOutput, compareMode),
-    actualOutput: truncate(outcome.stdout, MAX_TEST_OUTPUT_CHARS, '\n… (output cut off)'),
+    passed:
+      outcome.status === 'ok' &&
+      (matches(outcome.stdout) || (outcome.promptlessStdout !== outcome.stdout && matches(outcome.promptlessStdout))),
+    actualOutput: shortOutput(outcome.stdout),
     error: outcomeErrorText(outcome),
     durationMs: Math.max(0, Math.round(outcome.durationMs)),
   };
@@ -79,6 +90,7 @@ export async function runTestsWith(
     if (signal?.aborted) break;
     const test = tests[index]!;
     let result: TestResult;
+    let promptlessOutput = '';
     try {
       const handle = start(target, code, {
         stdin: inputLines(test.input),
@@ -95,6 +107,7 @@ export async function runTestsWith(
       }
       if (signal?.aborted && outcome.status === 'stopped') break;
       result = testResultFromOutcome(test, outcome, options.compareMode);
+      promptlessOutput = shortOutput(outcome.promptlessStdout);
       if (runnerFailed(outcome)) runnerError(result.error ?? "The code runner didn't start.");
     } catch (err) {
       result = {
@@ -108,7 +121,7 @@ export async function runTestsWith(
     }
     results.push(result);
     try {
-      options.onProgress?.({ index, result });
+      options.onProgress?.({ index, result, promptlessOutput });
     } catch {
       // A failing progress callback must not stop the remaining tests.
     }

@@ -1,4 +1,4 @@
-import { COMPARE_MODE_LABELS, type CompareMode, type Language } from '@codeclass/shared';
+import { COMPARE_MODE_DESCRIPTIONS, COMPARE_MODE_LABELS, type CompareMode, type Language } from '@codeclass/shared';
 import {
   ActionIcon,
   Alert,
@@ -22,9 +22,11 @@ import {
 import { IconAlertCircle, IconFlask, IconPlus, IconTrash, IconWand } from '@tabler/icons-react';
 import { useState } from 'react';
 import { ModelSolutionModal } from './ModelSolutionModal';
-import { emptyTest, type EditorForm } from './editorForm';
+import { emptyTest, promptExample, type EditorForm } from './editorForm';
 
 const COMPARE_OPTIONS = (Object.keys(COMPARE_MODE_LABELS) as CompareMode[]).map((value) => ({ value, label: COMPARE_MODE_LABELS[value] }));
+
+const NO_TESTS_NOTE = "Also used to compare students' output with your solution's when there are no tests.";
 
 const MONO = { input: { fontFamily: 'var(--mantine-font-family-monospace)' } };
 
@@ -32,8 +34,10 @@ const MONO = { input: { fontFamily: 'var(--mantine-font-family-monospace)' } };
 export function TestsEditor({ form, language }: { form: EditorForm; language: Language }) {
   const [solutionOpen, setSolutionOpen] = useState(false);
   // Re-renders come from the editor page: list edits and setValues update the form's state.
-  const { tests, compareMode, starterCode, solutionCode } = form.getValues();
+  const { tests, starterCode, solutionCode } = form.getValues();
+  const compareMode = form.useWatchValue('compareMode');
   const error = form.errors.tests;
+  const prompt = promptExample(language);
 
   return (
     <Card>
@@ -53,14 +57,22 @@ export function TestsEditor({ form, language }: { form: EditorForm; language: La
       <Text size="sm" c="dimmed" mb="md">
         Each test runs the program with the given input and compares what it prints with the expected output. Students can
         run visible tests; hidden tests only run when you grade. Points set each test's weight in the auto-score.
+        {tests.length > 0 && prompt && (
+          <>
+            {' '}
+            Filling expected outputs from a model solution leaves out input prompts such as {prompt}, so students can word
+            those their own way. A prompt printed on a line of its own stays in, so students' prompts have to match it.
+          </>
+        )}
       </Text>
 
       <Stack gap="md">
         <Select
           label="How to compare output"
+          description={`${COMPARE_MODE_DESCRIPTIONS[compareMode]} ${NO_TESTS_NOTE}`}
           data={COMPARE_OPTIONS}
           allowDeselect={false}
-          maw={420}
+          maw={560}
           key={form.key('compareMode')}
           {...form.getInputProps('compareMode')}
         />
@@ -120,7 +132,7 @@ export function TestsEditor({ form, language }: { form: EditorForm; language: La
                   <Grid.Col span={{ base: 12, sm: 6 }}>
                     <Textarea
                       label="Expected output"
-                      description="Exactly what the program should print."
+                      description={`What the program should print.${prompt ? ` Input prompts such as ${prompt} can be left out.` : ''}`}
                       placeholder={'e.g.\nHello, Ada!'}
                       autosize
                       minRows={3}

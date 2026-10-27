@@ -116,10 +116,10 @@ export function SolutionBadge({ visibility }: { visibility: SolutionVisibility }
   );
 }
 
-/** Teacher views: the student's code is the teacher's solution (`matchesSolution`). */
+/** Teacher views: the student's code is the same program as the teacher's solution (`useSameProgram`). */
 export function SolutionMatchBadge({ size = 'sm' }: { size?: BadgeProps['size'] }) {
   return (
-    <Tooltip label="Same code as your solution, ignoring blank lines and spaces at line ends" multiline maw={300}>
+    <Tooltip label="Same program as your solution — spacing, indentation, blank lines and comments don't count." multiline maw={300}>
       <Badge variant="light" size={size} color="teal" leftSection={<IconCopyCheck size={12} />} {...BADGE_NO_SHRINK}>
         Matches solution
       </Badge>

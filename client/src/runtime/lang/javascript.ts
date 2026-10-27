@@ -322,10 +322,12 @@ class Session {
     const write = (stream: Stream, text: string) => {
       if (this.active) this.io.write(stream, text);
     };
-    const readLine = () => (this.active ? this.io.readLine() : null);
+    /** Reads a line after `prompt`, the text the reading call has just printed itself ('' = none). */
+    const readLine = (prompt = '') => (this.active ? this.io.readLine(prompt) : null);
     const ask = (message: unknown) => {
-      if (message !== undefined && message !== null) write('stdout', String(message));
-      return readLine();
+      const prompt = message === undefined || message === null ? '' : String(message);
+      if (prompt) write('stdout', prompt);
+      return readLine(prompt);
     };
     const later = (callback: Callback, ...args: unknown[]) => this.setTimer(false, callback, 0, args);
 
@@ -347,6 +349,13 @@ class Session {
       let closed = false;
       let pumping = false;
       let promptText = '> ';
+      // What rl.prompt() printed since the last read: the next line read is its answer.
+      let shownPrompt = '';
+      const readAnswer = () => {
+        const line = readLine(shownPrompt);
+        shownPrompt = '';
+        return line;
+      };
       const close = () => {
         if (closed) return;
         closed = true;
@@ -357,7 +366,7 @@ class Session {
         pumping = true;
         const next = () => {
           if (closed) return;
-          const line = readLine();
+          const line = readAnswer();
           if (line === null) {
             close();
             return;
@@ -397,7 +406,10 @@ class Session {
         setPrompt: (text: unknown) => {
           promptText = String(text);
         },
-        prompt: () => write('stdout', promptText),
+        prompt: () => {
+          write('stdout', promptText);
+          shownPrompt = promptText;
+        },
         write: (text: unknown) => write('stdout', String(text)),
         pause: () => rl,
         resume: () => rl,
@@ -405,7 +417,7 @@ class Session {
         async *[Symbol.asyncIterator]() {
           for (;;) {
             if (closed) return;
-            const line = readLine();
+            const line = readAnswer();
             if (line === null) {
               close();
               return;
