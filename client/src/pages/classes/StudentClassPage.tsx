@@ -11,6 +11,8 @@ import { PageHeader } from '../../components/PageHeader';
 import { QueryState } from '../../components/QueryState';
 import { RelativeTime } from '../../components/RelativeTime';
 import { usePageTitle } from '../../hooks/usePageTitle';
+import { sortAssignments, useAssignmentSort } from './assignmentSort';
+import { AssignmentSortSelect } from './AssignmentSortSelect';
 
 function formatPoints(n: number): string {
   return String(Math.round(n * 100) / 100);
@@ -53,6 +55,7 @@ function AssignmentRow({ item, language }: { item: AssignmentListItem; language:
 function AssignmentList({ classId }: { classId: number }) {
   const query = useClassAssignments(classId);
   const languages = useLanguageMap();
+  const [sort, setSort] = useAssignmentSort();
   return (
     <Card>
       <QueryState query={query}>
@@ -62,7 +65,10 @@ function AssignmentList({ classId }: { classId: number }) {
               <Title order={3} fz="h4">
                 Assignments
               </Title>
-              {assignments.length > 0 && <Badge variant="light">{assignments.length}</Badge>}
+              <Group gap="sm">
+                {assignments.length > 1 && <AssignmentSortSelect value={sort} onChange={setSort} />}
+                {assignments.length > 0 && <Badge variant="light">{assignments.length}</Badge>}
+              </Group>
             </Group>
             {assignments.length === 0 ? (
               <EmptyState
@@ -75,7 +81,7 @@ function AssignmentList({ classId }: { classId: number }) {
               />
             ) : (
               <Stack gap={2} mx="-md">
-                {assignments.map((item) => (
+                {sortAssignments(assignments, sort).map((item) => (
                   <AssignmentRow key={item.id} item={item} language={languages.get(item.languageId)} />
                 ))}
               </Stack>

@@ -35,6 +35,8 @@ import { CountBadge, DraftBadge, LanguageBadge } from '../../components/badges';
 import { notifySuccess } from '../../components/notify';
 import { QueryState } from '../../components/QueryState';
 import { RelativeTime } from '../../components/RelativeTime';
+import { sortAssignments, useAssignmentSort } from './assignmentSort';
+import { AssignmentSortSelect } from './AssignmentSortSelect';
 import { confirmAction } from './confirmAction';
 import { CopyAssignmentsModal } from './CopyAssignmentsModal';
 
@@ -56,6 +58,7 @@ export function ClassAssignmentsTab({ cls }: { cls: ClassSummary }) {
   const languages = useLanguageMap();
   const deleteAssignment = useDeleteAssignment();
   const [copyOpened, copyModal] = useDisclosure(false);
+  const [sort, setSort] = useAssignmentSort();
 
   const confirmDelete = (a: AssignmentListItem) =>
     confirmAction({
@@ -83,9 +86,12 @@ export function ClassAssignmentsTab({ cls }: { cls: ClassSummary }) {
         <Title order={3} fz="h4">
           Assignments
         </Title>
-        <Button variant="light" leftSection={<IconCopy size={18} />} onClick={copyModal.open}>
-          Copy from another class
-        </Button>
+        <Group gap="sm">
+          {(assignments.data?.assignments.length ?? 0) > 1 && <AssignmentSortSelect value={sort} onChange={setSort} />}
+          <Button variant="light" leftSection={<IconCopy size={18} />} onClick={copyModal.open}>
+            Copy from another class
+          </Button>
+        </Group>
       </Group>
       <QueryState query={assignments}>
         {({ assignments: list }) =>
@@ -125,7 +131,7 @@ export function ClassAssignmentsTab({ cls }: { cls: ClassSummary }) {
                     </Table.Tr>
                   </Table.Thead>
                   <Table.Tbody>
-                    {list.map((a) => {
+                    {sortAssignments(list, sort).map((a) => {
                       const language = languages.get(a.languageId);
                       const toGrade = a.submittedCount - a.gradedCount;
                       return (

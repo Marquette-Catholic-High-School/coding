@@ -11,6 +11,7 @@ import { DraftBadge, LanguageBadge, UnavailableLanguageBadge } from '../../compo
 import { notifyError, notifySuccess } from '../../components/notify';
 import { ErrorAlert, QueryState } from '../../components/QueryState';
 import { RelativeTime } from '../../components/RelativeTime';
+import { sortAssignments, useAssignmentSort } from './assignmentSort';
 import { copyButtonLabel, copySummary, languageWarnings, MAX_COPY_AT_ONCE, skippedTitle, sourceClassOptions } from './copyAssignments';
 
 /** Copies assignments from another class the teacher manages (or this one) into `cls`. */
@@ -57,6 +58,8 @@ function AssignmentChecklist({
   sourceName: string;
   languages: Map<string, Language>;
 }) {
+  // The order chosen on the Assignments tab.
+  const [sort] = useAssignmentSort();
   if (list.length === 0) {
     return (
       <Paper withBorder p="md">
@@ -89,7 +92,7 @@ function AssignmentChecklist({
       <Divider />
       <ScrollArea.Autosize mah={320} type="auto">
         <Stack gap={0}>
-          {list.map((a, i) => {
+          {sortAssignments(list, sort).map((a, i) => {
             const language = languages.get(a.languageId);
             return (
               <Fragment key={a.id}>
@@ -148,8 +151,8 @@ function CopyAssignmentsBody({ cls, onClose }: { cls: ClassSummary; onClose: () 
   const submit = async (chosen: AssignmentListItem[]) => {
     setSkipped(null);
     try {
-      // Oldest first: copies made together share a creation time and the list shows newer ones first, so this keeps
-      // the order teachers see in the source class.
+      // Oldest first: copies made together share a creation time, so their ids then keep the source's creation order
+      // for the "Newest first" and "Oldest first" sorts.
       const ordered = [...chosen].sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id - b.id);
       const result = await copy.mutateAsync({ assignmentIds: ordered.map((a) => a.id), keepDueDates, publish });
       const summary = copySummary(result, (id) => languages.get(id)?.name ?? id, publish);

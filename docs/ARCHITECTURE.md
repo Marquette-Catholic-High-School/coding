@@ -357,7 +357,12 @@ CALL, MOD/DIV, LENGTH, `&` concatenation),
   graded / handed in. Only `GET/POST/PATCH /assignments…` (`assignmentResponse`) and the teacher's grading detail
   return an `Assignment`; the student submission endpoints return just the submission.
 - `GET /classes/:id/assignments` order: due date ascending (no due date last), then newest. Staff rows carry class
-  counts; student rows carry `myStatus/myLate/myGrade` and only published assignments.
+  counts; student rows carry `myStatus/myLate/myGrade` and only published assignments. The client re-sorts every
+  list of a class's assignments (Assignments tab, student class page, copy dialog) with `sortAssignments`
+  (`pages/classes/assignmentSort.ts`): Name A–Z (default; numeric, case- and accent-insensitive), Newest first,
+  Oldest first (created date) or Due date (earliest first, none last, then by name); ties go by id, i.e. creation
+  order, since copies made together share a creation time. `AssignmentSortSelect` picks it (shown from 2
+  assignments); the choice is kept per browser in localStorage `codeclass.assignmentSort` (`useAssignmentSort`).
 - Copy (`POST /classes/:id/assignments/copy`, `copyAssignmentsSchema`): the caller must manage class :id (403/404 like
   create) and every source's class (archived included); an unknown source or another teacher's → 404 and nothing is
   copied (one transaction). Copies are made in `assignmentIds` order (a repeated id copies once) with fresh

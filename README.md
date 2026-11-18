@@ -33,6 +33,8 @@ JavaScript, Python and a *Classroom Pseudocode* language.
    straight away.
    **Copy from another class** on the **Assignments** tab copies assignments, with their tests and solutions, from
    any of your classes. Copies start as drafts with no due date unless you choose otherwise.
+   The **Sort** menu above the list orders assignments by name (A–Z, with "Lesson 2" before "Lesson 10"), newest or
+   oldest first, or due date. Each browser remembers the choice, and students get the same menu on their class page.
 5. Students code, run tests and submit. You grade from the assignment page: type each grade straight into the
    student list, or open a student's work to read it and leave feedback. **Autograde** grades handed-in work for
    you: work that is the same program as your solution gets full marks (spacing, indentation, blank lines,
